@@ -55,10 +55,6 @@ impl Document {
     self.buffer.line_to_char(line_idx)
   }
 
-  pub fn graphemes(&self) -> String {
-    self.buffer.graphemes()
-  }
-
   pub fn as_bytes(&self) -> Vec<u8> {
     self.buffer.as_bytes()
   }

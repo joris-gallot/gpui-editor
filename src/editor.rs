@@ -9,7 +9,7 @@ use gpui::{
   Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
   UTF16Selection, Window, actions, div, green, prelude::*, px, red, white,
 };
-use unicode_segmentation::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 actions!(
   editor,
@@ -678,14 +678,22 @@ impl Editor {
   }
 
   fn previous_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
-    let doc = self.document.read(cx);
-    let content = doc.graphemes();
+    if offset == 0 {
+      return 0;
+    }
 
-    content
-      .grapheme_indices(true)
-      .rev()
-      .find_map(|(idx, _)| (idx < offset).then_some(idx))
-      .unwrap_or(0)
+    let doc = self.document.read(cx);
+    let bytes = doc.as_bytes();
+
+    // Simple UTF-8 boundary check - go back one byte at a time until we find a valid boundary
+    let mut idx = offset.saturating_sub(1);
+
+    // Move back to find the start of a UTF-8 character
+    while idx > 0 && (bytes[idx] & 0b1100_0000) == 0b1000_0000 {
+      idx -= 1;
+    }
+
+    idx
   }
 
   fn previous_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
@@ -694,48 +702,72 @@ impl Editor {
     }
 
     let doc = self.document.read(cx);
-    let bytes = doc.as_bytes();
-    let mut idx = offset - 1;
 
-    // Skip any trailing spaces
-    while idx > 0 && bytes[idx].is_ascii_whitespace() {
-      idx -= 1;
+    // Work on a slice around the cursor instead of entire buffer
+    // Get up to 1000 chars before cursor (enough for any reasonable word navigation)
+    let start = offset.saturating_sub(1000);
+    let slice = doc.slice_to_string(start..offset);
+    let relative_offset = offset - start;
+
+    // Find word boundaries in the slice
+    let mut last_boundary = 0;
+    for (idx, _) in slice.unicode_word_indices() {
+      if idx < relative_offset {
+        last_boundary = idx;
+      } else {
+        break;
+      }
     }
 
-    // Move to the start of the word
-    while idx > 0 && !bytes[idx - 1].is_ascii_whitespace() {
-      idx -= 1;
-    }
-
-    idx
+    start + last_boundary
   }
 
   fn next_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
     let doc = self.document.read(cx);
-    let content = doc.graphemes();
+    let bytes = doc.as_bytes();
 
-    content
-      .grapheme_indices(true)
-      .find_map(|(idx, _)| (idx > offset).then_some(idx))
-      .unwrap_or(doc.len())
+    if offset >= bytes.len() {
+      return bytes.len();
+    }
+
+    let mut idx = offset + 1;
+
+    // Move forward to find the start of the next UTF-8 character
+    while idx < bytes.len() && (bytes[idx] & 0b1100_0000) == 0b1000_0000 {
+      idx += 1;
+    }
+
+    idx.min(bytes.len())
   }
 
   fn next_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
     let doc = self.document.read(cx);
-    let bytes = doc.as_bytes();
-    let mut idx = offset;
+    let doc_len = doc.len();
 
-    // Skip any leading spaces
-    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-      idx += 1;
+    if offset >= doc_len {
+      return doc_len;
     }
 
-    // Move to the end of the word
-    while idx < bytes.len() && !bytes[idx].is_ascii_whitespace() {
-      idx += 1;
+    // Work on a slice around the cursor instead of entire buffer
+    // Get up to 1000 chars after cursor
+    let end = (offset + 1000).min(doc_len);
+    let slice = doc.slice_to_string(offset..end);
+
+    // Find the next word boundary in the slice
+    let mut word_indices = slice.unicode_word_indices();
+
+    // Find the first word boundary after the start
+    if let Some((idx, _)) = word_indices.next() {
+      if idx > 0 {
+        return offset + idx;
+      }
+      // If we're at the start of a word, find the next one
+      if let Some((idx, _)) = word_indices.next() {
+        return offset + idx;
+      }
     }
 
-    idx
+    end
   }
 }
 

@@ -81,10 +81,6 @@ impl TextBuffer {
     }
   }
 
-  pub fn graphemes(&self) -> String {
-    self.text.slice(..).to_string()
-  }
-
   pub fn insert(&mut self, char_index: usize, text: &str) {
     self.text.insert(char_index, text);
   }
