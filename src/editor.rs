@@ -160,7 +160,8 @@ impl Editor {
       doc.insert_char(cursor, '\n', cx);
     });
 
-    // Invalidate cache for all lines from current line onwards
+    self.move_to(cursor + 1, cx);
+
     self.invalidate_lines_from(current_line);
 
     self.ensure_cursor_visible(window, cx);
