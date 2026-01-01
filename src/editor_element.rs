@@ -4,14 +4,14 @@ use gpui::{
   PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
   blue, fill, point, prelude::*, px, relative, rgba, size,
 };
-use std::ops::Range;
+use std::{ops::Range, rc::Rc, sync::Arc};
 
 use crate::{document::Document, editor::Editor};
 
 /// Encapsulates layout information for mouse position -> text offset conversion
 #[derive(Clone)]
 pub struct PositionMap {
-  pub shaped_lines: Vec<(usize, ShapedLine)>,
+  pub shaped_lines: Vec<(usize, Arc<ShapedLine>)>,
   pub bounds: Bounds<Pixels>,
   pub line_height: Pixels,
   pub viewport: Range<usize>,
@@ -54,7 +54,7 @@ pub struct EditorElement {
 }
 
 pub struct PrepaintState {
-  shaped_lines: Vec<(usize, ShapedLine)>,
+  shaped_lines: Vec<(usize, Arc<ShapedLine>)>,
   cursor_quad: Option<PaintQuad>,
   selection_quads: Vec<PaintQuad>,
   viewport: Range<usize>,
@@ -126,7 +126,7 @@ impl Element for EditorElement {
     window: &mut Window,
     cx: &mut App,
   ) -> Self::PrepaintState {
-    let (viewport, selected_range, cursor_offset, lines_to_shape) = {
+    let (viewport, selected_range, cursor_offset, mut shaped_lines, lines_to_shape) = {
       let editor = self.editor.read(cx);
       let document = editor.document().read(cx);
       let line_height = window.line_height();
@@ -136,13 +136,21 @@ impl Element for EditorElement {
         self.calculate_viewport(bounds, line_height, scroll_offset, document.len_lines());
 
       let mut lines_to_shape = Vec::new();
+      let mut shaped_lines = Vec::new();
+
       for line_idx in viewport.clone() {
         if line_idx >= document.len_lines() {
           break;
         }
-        if !editor.line_layouts.contains_key(&line_idx) {
-          let line_content = document.line_content(line_idx).unwrap_or_default();
-          lines_to_shape.push((line_idx, line_content));
+        match editor.line_layouts.get(&line_idx) {
+          Some(shaped) => {
+            // Arc::clone is cheap - just incrementing reference count
+            shaped_lines.push((line_idx, Arc::clone(shaped)));
+          }
+          None => {
+            let line_content = document.line_content(line_idx).unwrap_or_default();
+            lines_to_shape.push((line_idx, line_content));
+          }
         }
       }
 
@@ -150,6 +158,7 @@ impl Element for EditorElement {
         viewport,
         editor.selected_range.clone(),
         editor.cursor_offset(),
+        shaped_lines,
         lines_to_shape,
       )
     };
@@ -177,25 +186,17 @@ impl Element for EditorElement {
     if !newly_shaped.is_empty() {
       self.editor.update(cx, |editor, _| {
         for (line_idx, shaped) in newly_shaped {
-          editor.line_layouts.insert(line_idx, shaped);
+          // Wrap in Arc for cheap cloning
+          let shaped_arc = Arc::new(shaped);
+          editor.line_layouts.insert(line_idx, shaped_arc.clone());
+          shaped_lines.push((line_idx, shaped_arc));
         }
         // Limit cache size to prevent memory issues with large files
         editor.ensure_cache_size(viewport.clone());
       });
     }
 
-    let editor = self.editor.read(cx);
-    let document = editor.document().read(cx);
-
-    let mut shaped_lines = Vec::new();
-    for line_idx in viewport.clone() {
-      if line_idx >= document.len_lines() {
-        break;
-      }
-      if let Some(shaped) = editor.line_layouts.get(&line_idx) {
-        shaped_lines.push((line_idx, shaped.clone()));
-      }
-    }
+    let document = self.editor.read(cx).document().read(cx);
 
     let cursor_line = document.char_to_line(cursor_offset);
     let cursor_quad = if viewport.contains(&cursor_line) {
@@ -301,16 +302,17 @@ impl Element for EditorElement {
       cx,
     );
 
-    let position_map = PositionMap {
+    // Use Rc to avoid cloning PositionMap in closures
+    let position_map = Rc::new(PositionMap {
       shaped_lines: prepaint.shaped_lines.clone(),
       bounds: prepaint.bounds,
       line_height: prepaint.line_height,
       viewport: prepaint.viewport.clone(),
-    };
+    });
 
     window.on_mouse_event({
       let editor = self.editor.clone();
-      let position_map = position_map.clone();
+      let position_map = Rc::clone(&position_map);
       move |event: &MouseDownEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
           editor.update(cx, |editor, cx| {
@@ -322,7 +324,6 @@ impl Element for EditorElement {
 
     window.on_mouse_event({
       let editor = self.editor.clone();
-
       move |event: &MouseUpEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
           editor.update(cx, |editor, cx| {
@@ -334,6 +335,7 @@ impl Element for EditorElement {
 
     window.on_mouse_event({
       let editor = self.editor.clone();
+      let position_map = Rc::clone(&position_map);
       move |event: &MouseMoveEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble {
           let is_selecting = editor.read(cx).is_selecting;

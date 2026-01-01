@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use crate::{
   document::Document,
@@ -59,7 +59,7 @@ pub struct Editor {
   pub is_selecting: bool,
 
   // Performance: cache and viewport
-  pub line_layouts: HashMap<usize, ShapedLine>,
+  pub line_layouts: HashMap<usize, Arc<ShapedLine>>,
   pub scroll_offset: f32, // In lines (0.0 = top)
 
   // Cache size limit to prevent memory issues with large files
@@ -100,6 +100,12 @@ impl Editor {
     &self.document
   }
 
+  /// Invalidate a single line in the cache
+  fn invalidate_line(&mut self, line: usize) {
+    self.line_layouts.remove(&line);
+  }
+
+  /// Invalidate all lines from start_line onwards (for multi-line edits)
   fn invalidate_lines_from(&mut self, start_line: usize) {
     self
       .line_layouts
@@ -162,6 +168,7 @@ impl Editor {
 
     self.move_to(cursor + 1, cx);
 
+    // Multi-line edit: invalidate from current line
     self.invalidate_lines_from(current_line);
 
     self.ensure_cursor_visible(window, cx);
@@ -810,13 +817,22 @@ impl EntityInputHandler for Editor {
       .unwrap_or(self.selected_range.clone());
 
     let start_line = self.document.read(cx).char_to_line(range.start);
+    let end_line = self.document.read(cx).char_to_line(range.end);
 
     self.document.update(cx, |doc, cx| {
       doc.replace(range.clone(), new_text, cx);
     });
 
-    // Invalidate cache for all lines from the start of the edit
-    self.invalidate_lines_from(start_line);
+    // Only invalidate affected line(s)
+    let has_newline = new_text.contains('\n');
+
+    if has_newline || start_line != end_line {
+      // Multi-line edit: invalidate from start line onwards
+      self.invalidate_lines_from(start_line);
+    } else {
+      // Single-line edit: only invalidate the affected line
+      self.invalidate_line(start_line);
+    }
 
     self.selected_range = range.start + new_text.len()..range.start + new_text.len();
     self.marked_range.take();
