@@ -557,7 +557,11 @@ impl Editor {
   fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
     self.target_column = None;
     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-      self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+      let cursor = self.cursor_offset();
+      let current_line = self.document.read(cx).char_to_line(cursor);
+      self.replace_text_in_range(None, &text, window, cx);
+      // Invalidate cache from current line onwards since paste may add multiple lines
+      self.invalidate_lines_from(current_line);
     }
   }
 
@@ -575,13 +579,17 @@ impl Editor {
   fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
     self.target_column = None;
     if !self.selected_range.is_empty() {
+      let cursor = self.cursor_offset();
+      let current_line = self.document.read(cx).char_to_line(cursor);
       cx.write_to_clipboard(ClipboardItem::new_string(
         self
           .document
           .read(cx)
           .slice_to_string(self.selected_range.clone()),
       ));
-      self.replace_text_in_range(None, "", window, cx)
+      self.replace_text_in_range(None, "", window, cx);
+      // Invalidate cache from current line onwards since cut may affect multiple lines
+      self.invalidate_lines_from(current_line);
     }
   }
 
