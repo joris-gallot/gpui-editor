@@ -677,23 +677,13 @@ impl Editor {
     self.offset_from_utf16(range_utf16.start, cx)..self.offset_from_utf16(range_utf16.end, cx)
   }
 
-  fn previous_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
+  fn previous_boundary(&self, offset: usize, _cx: &mut Context<Self>) -> usize {
     if offset == 0 {
       return 0;
     }
 
-    let doc = self.document.read(cx);
-    let bytes = doc.as_bytes();
-
-    // Simple UTF-8 boundary check - go back one byte at a time until we find a valid boundary
-    let mut idx = offset.saturating_sub(1);
-
-    // Move back to find the start of a UTF-8 character
-    while idx > 0 && (bytes[idx] & 0b1100_0000) == 0b1000_0000 {
-      idx -= 1;
-    }
-
-    idx
+    // Simply move back one char - Ropey handles char boundaries correctly
+    offset.saturating_sub(1)
   }
 
   fn previous_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
@@ -724,20 +714,14 @@ impl Editor {
 
   fn next_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
     let doc = self.document.read(cx);
-    let bytes = doc.as_bytes();
+    let doc_len = doc.len();
 
-    if offset >= bytes.len() {
-      return bytes.len();
+    if offset >= doc_len {
+      return doc_len;
     }
 
-    let mut idx = offset + 1;
-
-    // Move forward to find the start of the next UTF-8 character
-    while idx < bytes.len() && (bytes[idx] & 0b1100_0000) == 0b1000_0000 {
-      idx += 1;
-    }
-
-    idx.min(bytes.len())
+    // Simply move forward one char - Ropey handles char boundaries correctly
+    (offset + 1).min(doc_len)
   }
 
   fn next_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {

@@ -55,10 +55,6 @@ impl Document {
     self.buffer.line_to_char(line_idx)
   }
 
-  pub fn as_bytes(&self) -> Vec<u8> {
-    self.buffer.as_bytes()
-  }
-
   pub fn insert_char(&mut self, offset: usize, ch: char, cx: &mut Context<Self>) {
     self.buffer.insert_char(offset, ch);
     cx.notify();

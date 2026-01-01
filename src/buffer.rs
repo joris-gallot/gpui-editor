@@ -36,10 +36,6 @@ impl TextBuffer {
     self.text.line_to_char(line_idx)
   }
 
-  pub fn as_bytes(&self) -> Vec<u8> {
-    self.text.bytes().collect()
-  }
-
   pub fn slice_to_string(&self, range: Range<usize>) -> String {
     self.text.slice(range).to_string()
   }
