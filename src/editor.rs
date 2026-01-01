@@ -654,30 +654,26 @@ impl Editor {
 
   fn offset_from_utf16(&self, offset: usize, cx: &App) -> usize {
     let document = self.document.read(cx);
-    let mut utf8_offset = 0;
     let mut utf16_count = 0;
 
-    for ch in document.chars() {
+    for (char_offset, ch) in document.chars().enumerate() {
       if utf16_count >= offset {
-        break;
+        return char_offset;
       }
       utf16_count += ch.len_utf16();
-      utf8_offset += ch.len_utf8();
     }
 
-    utf8_offset
+    document.len()
   }
 
   fn offset_to_utf16(&self, offset: usize, cx: &App) -> usize {
     let document = self.document.read(cx);
     let mut utf16_offset = 0;
-    let mut utf8_count = 0;
 
-    for ch in document.chars() {
-      if utf8_count >= offset {
+    for (char_count, ch) in document.chars().enumerate() {
+      if char_count >= offset {
         break;
       }
-      utf8_count += ch.len_utf8();
       utf16_offset += ch.len_utf16();
     }
 
@@ -956,5 +952,912 @@ impl Render for Editor {
 impl Focusable for Editor {
   fn focus_handle(&self, _: &App) -> FocusHandle {
     self.focus_handle.clone()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use gpui::TestAppContext;
+
+  /// Helper context for testing Editor
+  struct EditorTestContext {
+    pub cx: TestAppContext,
+    pub editor: Entity<Editor>,
+  }
+
+  impl EditorTestContext {
+    /// Create a new test context with empty document
+    #[allow(dead_code)]
+    fn new(mut cx: TestAppContext) -> Self {
+      let editor = cx.new(|cx| {
+        let doc = cx.new(|cx| Document::new(cx));
+        Editor {
+          document: doc,
+          focus_handle: cx.focus_handle(),
+          selected_range: 0..0,
+          selection_reversed: false,
+          marked_range: None,
+          is_selecting: false,
+          line_layouts: HashMap::new(),
+          scroll_offset: 0.0,
+          viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
+          max_cache_size: MAX_CACHE_SIZE,
+          target_column: None,
+        }
+      });
+
+      Self { cx, editor }
+    }
+
+    /// Create a test context with specific text content
+    fn with_text(mut cx: TestAppContext, text: &str) -> Self {
+      let editor = cx.new(|cx| {
+        let doc = cx.new(|cx| Document::with_text(text, cx));
+        Editor {
+          document: doc,
+          focus_handle: cx.focus_handle(),
+          selected_range: 0..0,
+          selection_reversed: false,
+          marked_range: None,
+          is_selecting: false,
+          line_layouts: HashMap::new(),
+          scroll_offset: 0.0,
+          viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
+          max_cache_size: MAX_CACHE_SIZE,
+          target_column: None,
+        }
+      });
+
+      Self { cx, editor }
+    }
+
+    /// Create a test context with multiple lines for testing
+    fn with_lines(cx: TestAppContext, count: usize) -> Self {
+      let mut text = String::new();
+      for i in 0..count {
+        if i > 0 {
+          text.push('\n');
+        }
+        text.push_str(&format!("Line {}", i + 1));
+      }
+      Self::with_text(cx, &text)
+    }
+
+    /// Get the current text content
+    fn text(&self) -> String {
+      self.editor.read_with(&self.cx, |editor, cx| {
+        let doc = editor.document().read(cx);
+        doc.slice_to_string(0..doc.len())
+      })
+    }
+
+    /// Get the current cursor offset
+    fn cursor_offset(&self) -> usize {
+      self
+        .editor
+        .read_with(&self.cx, |editor, _| editor.cursor_offset())
+    }
+
+    /// Get the current selection range
+    fn selection(&self) -> Range<usize> {
+      self
+        .editor
+        .read_with(&self.cx, |editor, _| editor.selected_range.clone())
+    }
+
+    /// Get whether selection is reversed
+    #[allow(dead_code)]
+    fn selection_reversed(&self) -> bool {
+      self
+        .editor
+        .read_with(&self.cx, |editor, _| editor.selection_reversed)
+    }
+
+    /// Set cursor position (collapses selection)
+    fn set_cursor(&mut self, offset: usize) {
+      self.editor.update(&mut self.cx, |editor, cx| {
+        editor.move_to(offset, cx);
+      });
+    }
+
+    /// Set selection range
+    fn set_selection(&mut self, range: Range<usize>, reversed: bool) {
+      self.editor.update(&mut self.cx, |editor, _| {
+        editor.selected_range = range;
+        editor.selection_reversed = reversed;
+      });
+    }
+
+    /// Get the number of cached lines
+    fn cache_size(&self) -> usize {
+      self
+        .editor
+        .read_with(&self.cx, |editor, _| editor.line_layouts.len())
+    }
+
+    /// Check if a specific line is cached
+    fn is_line_cached(&self, line_idx: usize) -> bool {
+      self.editor.read_with(&self.cx, |editor, _| {
+        editor.line_layouts.contains_key(&line_idx)
+      })
+    }
+  }
+
+  // ============================================================================
+  // Cache Management Tests
+
+  #[gpui::test]
+  fn test_invalidate_line_single(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_lines(cx.clone(), 10);
+
+    // Simulate cached lines
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..5 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    // Verify all are cached
+    for i in 0..5 {
+      assert!(ctx.is_line_cached(i));
+    }
+
+    // Invalidate line 2
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      editor.invalidate_line(2);
+    });
+
+    // Line 2 should be removed, others stay
+    assert!(ctx.is_line_cached(0));
+    assert!(ctx.is_line_cached(1));
+    assert!(!ctx.is_line_cached(2));
+    assert!(ctx.is_line_cached(3));
+    assert!(ctx.is_line_cached(4));
+  }
+
+  #[gpui::test]
+  fn test_invalidate_lines_from(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_lines(cx.clone(), 10);
+
+    // Simulate cached lines 0-9
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..10 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    assert_eq!(ctx.cache_size(), 10);
+
+    // Invalidate from line 5
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      editor.invalidate_lines_from(5);
+    });
+
+    // Lines 0-4 should remain, 5-9 should be removed
+    assert!(ctx.is_line_cached(0));
+    assert!(ctx.is_line_cached(4));
+    assert!(!ctx.is_line_cached(5));
+    assert!(!ctx.is_line_cached(9));
+    assert_eq!(ctx.cache_size(), 5);
+  }
+
+  #[gpui::test]
+  fn test_ensure_cache_size_limit(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_lines(cx.clone(), 300);
+
+    // Fill cache beyond MAX_CACHE_SIZE
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..250 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    assert_eq!(ctx.cache_size(), 250);
+
+    // Call ensure_cache_size with viewport at lines 100-120
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      editor.ensure_cache_size(100..120);
+    });
+
+    // Cache should be reduced
+    assert!(ctx.cache_size() < 250);
+
+    // Lines near viewport should be kept (50..170 range)
+    ctx.editor.read_with(&ctx.cx, |editor, _| {
+      assert!(editor.line_layouts.contains_key(&100));
+      assert!(editor.line_layouts.contains_key(&110));
+    });
+  }
+
+  #[gpui::test]
+  fn test_cache_retention_after_viewport_change(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_lines(cx.clone(), 100);
+
+    // Cache lines 10-20
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 10..=20 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    // Ensure cache size with different viewport
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      editor.ensure_cache_size(30..40);
+    });
+
+    // Old cache should still exist (under limit)
+    assert!(ctx.is_line_cached(15));
+  }
+
+  #[gpui::test]
+  fn test_invalidate_on_insert(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3");
+
+    // Cache all lines
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..3 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    // Insert char on line 1 (offset 6 = start of "line2")
+    ctx.set_cursor(6);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.document.update(cx, |doc, cx| {
+        doc.insert_char(6, 'X', cx);
+      });
+      editor.invalidate_line(1);
+    });
+
+    // Only line 1 should be invalidated
+    assert!(ctx.is_line_cached(0));
+    assert!(!ctx.is_line_cached(1));
+    assert!(ctx.is_line_cached(2));
+  }
+
+  #[gpui::test]
+  fn test_invalidate_on_newline(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3");
+
+    // Cache all lines
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..3 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    // Insert newline on line 1
+    ctx.set_cursor(6);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let current_line = editor.document.read(cx).char_to_line(6);
+      editor.document.update(cx, |doc, cx| {
+        doc.insert_char(6, '\n', cx);
+      });
+      editor.invalidate_lines_from(current_line);
+    });
+
+    // Lines from 1 onwards should be invalidated
+    assert!(ctx.is_line_cached(0));
+    assert!(!ctx.is_line_cached(1));
+    assert!(!ctx.is_line_cached(2));
+  }
+
+  // ============================================================================
+  // Navigation Tests
+  // ============================================================================
+
+  #[gpui::test]
+  fn test_cursor_offset_initial(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+    assert_eq!(ctx.cursor_offset(), 0);
+    assert_eq!(ctx.selection(), 0..0);
+  }
+
+  #[gpui::test]
+  fn test_move_to(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    ctx.set_cursor(5);
+    assert_eq!(ctx.cursor_offset(), 5);
+    assert_eq!(ctx.selection(), 5..5);
+
+    ctx.set_cursor(11);
+    assert_eq!(ctx.cursor_offset(), 11);
+  }
+
+  #[gpui::test]
+  fn test_left_navigation(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    ctx.set_cursor(3);
+
+    // Test the internal logic by checking cursor moved left
+    let prev_offset = ctx.cursor_offset();
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let new_offset = if editor.selected_range.is_empty() {
+        editor.cursor_offset().saturating_sub(1)
+      } else {
+        editor.selected_range.start.min(editor.selected_range.end)
+      };
+      editor.move_to(new_offset, cx);
+    });
+    assert_eq!(ctx.cursor_offset(), prev_offset - 1);
+  }
+
+  #[gpui::test]
+  fn test_left_at_start(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    ctx.set_cursor(0);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let new_offset = editor.cursor_offset().saturating_sub(1);
+      editor.move_to(new_offset, cx);
+    });
+    assert_eq!(ctx.cursor_offset(), 0); // Should stay at 0
+  }
+
+  #[gpui::test]
+  fn test_right_navigation(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    ctx.set_cursor(2);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let doc_len = editor.document().read(cx).len();
+      let new_offset = if editor.selected_range.is_empty() {
+        (editor.cursor_offset() + 1).min(doc_len)
+      } else {
+        editor.selected_range.start.max(editor.selected_range.end)
+      };
+      editor.move_to(new_offset, cx);
+    });
+    assert_eq!(ctx.cursor_offset(), 3);
+  }
+
+  #[gpui::test]
+  fn test_right_at_end(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    ctx.set_cursor(5);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let doc_len = editor.document().read(cx).len();
+      let new_offset = (editor.cursor_offset() + 1).min(doc_len);
+      editor.move_to(new_offset, cx);
+    });
+    assert_eq!(ctx.cursor_offset(), 5); // Should stay at end
+  }
+
+  // Note: Navigation tests that require Window are skipped for now
+  // These will be tested with integration tests or VisualTestContext
+
+  #[gpui::test]
+  fn test_move_to_updates_cursor(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    ctx.set_cursor(7);
+    assert_eq!(ctx.cursor_offset(), 7);
+    assert_eq!(ctx.selection(), 7..7);
+  }
+
+  #[gpui::test]
+  fn test_cursor_at_line_boundary(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3");
+
+    // Test cursor at line starts
+    ctx.set_cursor(0);
+    assert_eq!(ctx.cursor_offset(), 0);
+
+    ctx.set_cursor(6); // Start of line2
+    assert_eq!(ctx.cursor_offset(), 6);
+
+    ctx.set_cursor(12); // Start of line3
+    assert_eq!(ctx.cursor_offset(), 12);
+  }
+
+  #[gpui::test]
+  fn test_cursor_positioning(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    // Test various cursor positions
+    for pos in [0, 5, 11] {
+      ctx.set_cursor(pos);
+      assert_eq!(ctx.cursor_offset(), pos);
+      assert_eq!(ctx.selection(), pos..pos);
+    }
+  }
+
+  // ============================================================================
+  // Text Editing Tests
+  // ============================================================================
+
+  // Note: Text editing tests that require Window are skipped for now
+  // The core logic is well-tested in buffer.rs and document.rs
+
+  #[gpui::test]
+  fn test_selection_with_replace(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    // Test replacing selection
+    ctx.set_selection(2..7, false);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let range = editor.selected_range.clone();
+      editor.document.update(cx, |doc, cx| {
+        doc.replace(range, "X", cx);
+      });
+      editor.move_to(2, cx);
+    });
+
+    assert_eq!(ctx.text(), "heXorld");
+    assert_eq!(ctx.cursor_offset(), 2);
+  }
+
+  #[gpui::test]
+  fn test_insert_at_cursor(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    ctx.set_cursor(5);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let cursor = editor.cursor_offset();
+      editor.document.update(cx, |doc, cx| {
+        doc.insert_char(cursor, '!', cx);
+      });
+      editor.move_to(cursor + 1, cx);
+    });
+
+    assert_eq!(ctx.text(), "hello!");
+    assert_eq!(ctx.cursor_offset(), 6);
+  }
+
+  #[gpui::test]
+  fn test_unicode_editing(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello 👋 world");
+
+    // Verify emoji is present
+    let text = ctx.text();
+    assert!(text.contains("👋"));
+
+    // Test cursor positioning around emoji
+    ctx.set_cursor(6); // Before emoji
+    assert_eq!(ctx.cursor_offset(), 6);
+
+    ctx.set_cursor(7); // After emoji
+    assert_eq!(ctx.cursor_offset(), 7);
+  }
+
+  #[gpui::test]
+  fn test_cache_invalidation_on_edit(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3");
+
+    // Cache all lines
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..3 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    // Edit line 1
+    ctx.set_cursor(6);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.document.update(cx, |doc, cx| {
+        doc.insert_char(6, 'X', cx);
+      });
+      let line = editor.document.read(cx).char_to_line(6);
+      editor.invalidate_line(line);
+    });
+
+    // Only line 1 should be invalidated
+    assert!(ctx.is_line_cached(0));
+    assert!(!ctx.is_line_cached(1));
+    assert!(ctx.is_line_cached(2));
+  }
+
+  #[gpui::test]
+  fn test_multiline_cache_invalidation(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3\nline4");
+
+    // Cache all lines
+    ctx.editor.update(&mut ctx.cx, |editor, _| {
+      for i in 0..4 {
+        editor
+          .line_layouts
+          .insert(i, Arc::new(ShapedLine::default()));
+      }
+    });
+
+    // Insert newline on line 1
+    ctx.set_cursor(6);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      let line = editor.document.read(cx).char_to_line(6);
+      editor.document.update(cx, |doc, cx| {
+        doc.insert_char(6, '\n', cx);
+      });
+      editor.invalidate_lines_from(line);
+    });
+
+    // Lines from 1 onwards should be invalidated
+    assert!(ctx.is_line_cached(0));
+    assert!(!ctx.is_line_cached(1));
+    assert!(!ctx.is_line_cached(2));
+    assert!(!ctx.is_line_cached(3));
+  }
+
+  // ============================================================================
+  // UTF-16 Conversion Tests
+  // ============================================================================
+
+  #[gpui::test]
+  fn test_offset_to_utf16_ascii(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    let utf16_offset = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.offset_to_utf16(5, cx));
+
+    // ASCII: UTF-8 and UTF-16 offsets are the same
+    assert_eq!(utf16_offset, 5);
+  }
+
+  #[gpui::test]
+  fn test_offset_from_utf16_ascii(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    let utf8_offset = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.offset_from_utf16(5, cx));
+
+    assert_eq!(utf8_offset, 5);
+  }
+
+  #[gpui::test]
+  fn test_offset_to_utf16_emoji(cx: &mut TestAppContext) {
+    // "hello 👋 world" - emoji is 4 bytes in UTF-8, 2 code units in UTF-16
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello 👋 world");
+
+    // Offset 6 is before emoji (after "hello ")
+    let utf16_before = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.offset_to_utf16(6, cx));
+    assert_eq!(utf16_before, 6);
+
+    // Offset 7 is after emoji (4-byte char)
+    let utf16_after = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.offset_to_utf16(7, cx));
+    // In UTF-16: "hello " (6) + "👋" (2) = 8
+    assert_eq!(utf16_after, 8);
+  }
+
+  #[gpui::test]
+  fn test_offset_from_utf16_emoji(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello 👋 world");
+
+    // UTF-16 offset 6 = before emoji
+    let utf8_before = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.offset_from_utf16(6, cx));
+    assert_eq!(utf8_before, 6);
+
+    // UTF-16 offset 8 = after emoji (👋 is 2 UTF-16 code units)
+    let utf8_after = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.offset_from_utf16(8, cx));
+    assert_eq!(utf8_after, 7); // 4-byte emoji = 1 char in UTF-8 offset
+  }
+
+  #[gpui::test]
+  fn test_offset_to_utf16_multibyte(cx: &mut TestAppContext) {
+    // "café" - é is 2 bytes in UTF-8, 1 code unit in UTF-16
+    let ctx = EditorTestContext::with_text(cx.clone(), "café");
+
+    let utf16_end = ctx.editor.read_with(&ctx.cx, |editor, cx| {
+      editor.offset_to_utf16(5, cx) // 5 bytes: c(1) + a(1) + f(1) + é(2)
+    });
+    assert_eq!(utf16_end, 4); // 4 UTF-16 code units
+  }
+
+  #[gpui::test]
+  fn test_range_to_utf16(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello 👋 world");
+
+    let utf16_range = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.range_to_utf16(&(0..7), cx));
+
+    // Range 0..7 in UTF-8 = "hello 👋"
+    // In UTF-16: 0..8 (emoji is 2 code units)
+    assert_eq!(utf16_range, 0..8);
+  }
+
+  #[gpui::test]
+  fn test_range_from_utf16(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello 👋 world");
+
+    let utf8_range = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.range_from_utf16(&(0..8), cx));
+
+    // Range 0..8 in UTF-16 = "hello 👋"
+    // In UTF-8: 0..7 (emoji is 4 bytes but counts as 1 char offset)
+    assert_eq!(utf8_range, 0..7);
+  }
+
+  #[gpui::test]
+  fn test_utf16_roundtrip(cx: &mut TestAppContext) {
+    let ctx = EditorTestContext::with_text(cx.clone(), "hello 👋 世界");
+
+    // Test roundtrip: UTF-8 -> UTF-16 -> UTF-8
+    for offset in [0, 5, 6, 7, 8, 9] {
+      let utf16 = ctx
+        .editor
+        .read_with(&ctx.cx, |editor, cx| editor.offset_to_utf16(offset, cx));
+      let back_to_utf8 = ctx
+        .editor
+        .read_with(&ctx.cx, |editor, cx| editor.offset_from_utf16(utf16, cx));
+      assert_eq!(
+        back_to_utf8, offset,
+        "Roundtrip failed for offset {}",
+        offset
+      );
+    }
+  }
+
+  // ============================================================================
+  // Word Boundary Tests
+  // ============================================================================
+
+  #[gpui::test]
+  fn test_previous_word_boundary_simple(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world foo");
+
+    // From end of "world" (offset 11), go to start of "world" (offset 6)
+    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.previous_word_boundary(11, cx)
+    });
+    assert_eq!(boundary, 6);
+  }
+
+  #[gpui::test]
+  fn test_previous_word_boundary_at_start(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.previous_word_boundary(0, cx)
+    });
+    assert_eq!(boundary, 0);
+  }
+
+  #[gpui::test]
+  fn test_previous_word_boundary_multiple_spaces(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello   world");
+
+    // From "world" back to start of "world"
+    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.previous_word_boundary(12, cx)
+    });
+    assert_eq!(boundary, 8);
+  }
+
+  #[gpui::test]
+  fn test_previous_word_boundary_underscore(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "foo_bar_baz");
+
+    // Underscores are part of words in unicode word segmentation
+    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.previous_word_boundary(11, cx)
+    });
+    assert_eq!(boundary, 0); // Should go to start of entire word
+  }
+
+  #[gpui::test]
+  fn test_previous_word_boundary_punctuation(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello, world!");
+
+    // From after "world" back to start of "world"
+    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.previous_word_boundary(12, cx)
+    });
+    assert_eq!(boundary, 7);
+  }
+
+  #[gpui::test]
+  fn test_next_word_boundary_simple(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world foo");
+
+    // From start of "hello" (offset 0), go to start of "world" (offset 6)
+    let boundary = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
+    assert_eq!(boundary, 6);
+  }
+
+  #[gpui::test]
+  fn test_next_word_boundary_at_end(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    let doc_len = ctx.text().len();
+    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.next_word_boundary(doc_len, cx)
+    });
+    assert_eq!(boundary, doc_len);
+  }
+
+  #[gpui::test]
+  fn test_next_word_boundary_multiple_words(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "one two three");
+
+    // From "one" to "two"
+    let boundary1 = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
+    assert_eq!(boundary1, 4);
+
+    // From "two" to "three"
+    let boundary2 = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(4, cx));
+    assert_eq!(boundary2, 8);
+  }
+
+  #[gpui::test]
+  fn test_next_word_boundary_punctuation(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello, world!");
+
+    // From "hello" to "world"
+    let boundary = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
+    assert_eq!(boundary, 7);
+  }
+
+  #[gpui::test]
+  fn test_word_boundary_unicode(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello 世界 world");
+
+    // Previous word boundary from end
+    let prev = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.previous_word_boundary(13, cx)
+    });
+    assert_eq!(prev, 9); // Start of "world"
+
+    // Next word boundary from start
+    let next = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
+    assert_eq!(next, 6); // Start of "世界"
+  }
+
+  // ============================================================================
+  // Character Boundary Tests
+  // ============================================================================
+
+  #[gpui::test]
+  fn test_previous_boundary(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    let boundary = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.previous_boundary(3, cx));
+    assert_eq!(boundary, 2);
+  }
+
+  #[gpui::test]
+  fn test_previous_boundary_at_start(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    let boundary = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.previous_boundary(0, cx));
+    assert_eq!(boundary, 0);
+  }
+
+  #[gpui::test]
+  fn test_next_boundary(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    let boundary = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_boundary(2, cx));
+    assert_eq!(boundary, 3);
+  }
+
+  #[gpui::test]
+  fn test_next_boundary_at_end(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
+
+    let boundary = ctx
+      .editor
+      .update(&mut ctx.cx, |editor, cx| editor.next_boundary(5, cx));
+    assert_eq!(boundary, 5);
+  }
+
+  // ============================================================================
+  // Selection Logic Tests
+  // ============================================================================
+
+  #[gpui::test]
+  fn test_select_to_forward(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    ctx.set_cursor(0);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.select_to(5, cx);
+    });
+
+    assert_eq!(ctx.selection(), 0..5);
+    assert!(!ctx.selection_reversed());
+  }
+
+  #[gpui::test]
+  fn test_select_to_backward(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    ctx.set_cursor(5);
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.select_to(0, cx);
+    });
+
+    assert_eq!(ctx.selection(), 0..5);
+    assert!(ctx.selection_reversed());
+  }
+
+  #[gpui::test]
+  fn test_select_to_extends_selection(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    // Start with selection 2..5
+    ctx.set_selection(2..5, false);
+
+    // Extend to 8
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.select_to(8, cx);
+    });
+
+    assert_eq!(ctx.selection(), 2..8);
+    assert!(!ctx.selection_reversed());
+  }
+
+  #[gpui::test]
+  fn test_select_to_reverses_direction(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    // Start with forward selection 2..5
+    ctx.set_selection(2..5, false);
+
+    // Select backwards past anchor
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.select_to(0, cx);
+    });
+
+    assert_eq!(ctx.selection(), 0..2);
+    assert!(ctx.selection_reversed());
+  }
+
+  #[gpui::test]
+  fn test_selection_anchor_preserved(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    // Set selection with anchor at 3
+    ctx.set_selection(3..7, false);
+
+    // Select to different position, anchor should stay at 3
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.select_to(10, cx);
+    });
+
+    assert_eq!(ctx.selection(), 3..10);
   }
 }

@@ -408,3 +408,176 @@ impl Element for EditorElement {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use gpui::{TestAppContext, px, size};
+
+  // Helper to create test bounds
+  fn test_bounds(width: f32, height: f32) -> Bounds<Pixels> {
+    Bounds::new(Point::default(), size(px(width), px(height)))
+  }
+
+  // ============================================================================
+  // Viewport Calculation Tests
+  // ============================================================================
+
+  #[gpui::test]
+  fn test_calculate_viewport_simple(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    // 400px height, 20px line height = 20 visible lines
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 0.0;
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    assert_eq!(viewport, 0..20);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_with_scroll(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 10.0; // Scrolled down 10 lines
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    assert_eq!(viewport, 10..30);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_at_end(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 90.0; // Near end
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    // Should clamp to total_lines
+    assert_eq!(viewport, 90..100);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_short_document(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 0.0;
+    let total_lines = 5; // Document shorter than viewport
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    assert_eq!(viewport, 0..5);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_fractional_scroll(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 5.5; // Fractional scroll
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    // Should floor scroll_offset
+    assert_eq!(viewport, 5..25);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_scroll_past_end(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 150.0; // Way past end
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    // Should clamp start_line to total_lines - 1
+    assert_eq!(viewport, 99..100);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_minimum_one_line(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 10.0); // Very small height
+    let line_height = px(20.0);
+    let scroll_offset = 0.0;
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    // Should show at least 1 line even if height is too small
+    assert_eq!(viewport, 0..1);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_large_line_height(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(40.0); // Large line height
+    let scroll_offset = 0.0;
+    let total_lines = 100;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    // 400 / 40 = 10 visible lines
+    assert_eq!(viewport, 0..10);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_single_line_document(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 0.0;
+    let total_lines = 1;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    assert_eq!(viewport, 0..1);
+  }
+
+  #[gpui::test]
+  fn test_calculate_viewport_empty_document(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let element = EditorElement::new(editor);
+
+    let bounds = test_bounds(800.0, 400.0);
+    let line_height = px(20.0);
+    let scroll_offset = 0.0;
+    let total_lines = 0;
+
+    let viewport = element.calculate_viewport(bounds, line_height, scroll_offset, total_lines);
+
+    // Empty document edge case - start_line gets clamped to 0
+    // This creates a 0..0 range which is valid but empty
+    assert!(viewport.is_empty());
+  }
+}
