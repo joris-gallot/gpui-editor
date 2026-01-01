@@ -9,13 +9,11 @@ mod editor;
 mod editor_element;
 
 use editor::{
-  Backspace, BackspaceAll, BackspaceWord, CmdDown, CmdLeft, CmdRight, CmdUp, Copy, Cut, Delete,
-  Editor, End, Enter, Home, Left, Paste, Right, SelectAll, SelectCmdDown, SelectCmdLeft,
-  SelectCmdRight, SelectCmdUp, SelectDown, SelectLeft, SelectRight, SelectUp, SelectWordLeft,
-  SelectWordRight, ShowCharacterPalette,
+  AltLeft, AltRight, Backspace, BackspaceAll, BackspaceWord, CmdDown, CmdLeft, CmdRight, CmdUp,
+  Copy, Cut, Delete, Down, Editor, End, Enter, Home, Left, Paste, Quit, Right, SelectAll,
+  SelectCmdDown, SelectCmdLeft, SelectCmdRight, SelectCmdUp, SelectDown, SelectLeft, SelectRight,
+  SelectUp, SelectWordLeft, SelectWordRight, ShowCharacterPalette, Up,
 };
-
-use crate::editor::{AltLeft, AltRight, Down, Quit, Up};
 
 struct EditorExample {
   editor: Entity<Editor>,
