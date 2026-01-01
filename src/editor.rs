@@ -475,20 +475,37 @@ impl Editor {
   fn backspace_word(&mut self, _: &BackspaceWord, window: &mut Window, cx: &mut Context<Self>) {
     self.target_column = None;
     if self.selected_range.is_empty() {
-      self.select_to(self.previous_word_boundary(self.cursor_offset(), cx), cx)
+      let document = self.document.read(cx);
+      let cursor = self.cursor_offset();
+      let line = document.char_to_line(cursor);
+      let line_start = document.line_to_char(line);
+
+      // If we're at the beginning of an empty line, behave like simple backspace
+      if cursor == line_start && document.line_content(line).unwrap_or_default().is_empty() {
+        self.select_to(self.previous_boundary(cursor, cx), cx);
+      } else {
+        self.select_to(self.previous_word_boundary(cursor, cx), cx);
+      }
     }
     self.replace_text_in_range(None, "", window, cx)
   }
 
   fn backspace_all(&mut self, _: &BackspaceAll, window: &mut Window, cx: &mut Context<Self>) {
     self.target_column = None;
+    if self.selected_range.is_empty() {
+      let document = self.document.read(cx);
+      let cursor = self.cursor_offset();
+      let line = document.char_to_line(cursor);
+      let line_start = document.line_to_char(line);
 
-    let document = self.document.read(cx);
-    let cursor = self.cursor_offset();
-    let line = document.char_to_line(cursor);
-    let line_start = document.line_to_char(line);
-    self.select_to(line_start, cx);
-
+      // If we're at the beginning of an empty line, behave like simple backspace
+      if cursor == line_start && document.line_content(line).unwrap_or_default().is_empty() {
+        self.select_to(self.previous_boundary(cursor, cx), cx);
+      } else {
+        // Delete from start of current line to cursor
+        self.select_to(line_start, cx);
+      }
+    }
     self.replace_text_in_range(None, "", window, cx)
   }
 
