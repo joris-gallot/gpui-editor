@@ -1,0 +1,894 @@
+use std::{collections::HashMap, ops::Range};
+
+use crate::{
+  document::Document,
+  editor_element::{EditorElement, PositionMap},
+};
+use gpui::{
+  App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
+  Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
+  UTF16Selection, Window, actions, div, green, prelude::*, px, red, white,
+};
+use unicode_segmentation::*;
+
+actions!(
+  editor,
+  [
+    Enter,
+    Backspace,
+    BackspaceWord,
+    BackspaceAll,
+    Delete,
+    Up,
+    Down,
+    Left,
+    AltLeft,
+    CmdLeft,
+    Right,
+    CmdRight,
+    AltRight,
+    CmdUp,
+    CmdDown,
+    SelectUp,
+    SelectDown,
+    SelectLeft,
+    SelectRight,
+    SelectCmdLeft,
+    SelectCmdRight,
+    SelectCmdUp,
+    SelectCmdDown,
+    SelectWordLeft,
+    SelectWordRight,
+    SelectAll,
+    Home,
+    End,
+    ShowCharacterPalette,
+    Paste,
+    Cut,
+    Copy,
+    Quit,
+  ]
+);
+
+pub struct Editor {
+  pub document: Entity<Document>,
+  pub focus_handle: FocusHandle,
+  pub selected_range: Range<usize>,
+  pub selection_reversed: bool,
+  pub marked_range: Option<Range<usize>>,
+  pub is_selecting: bool,
+
+  // Performance: cache and viewport
+  pub line_layouts: HashMap<usize, ShapedLine>,
+  pub scroll_offset: f32, // In lines (0.0 = top)
+
+  // Cache size limit to prevent memory issues with large files
+  max_cache_size: usize,
+
+  // Target column for vertical navigation
+  target_column: Option<usize>,
+}
+
+impl Editor {
+  pub fn new(cx: &mut Context<Self>) -> Self {
+    // Create a test document with 100k lines for performance testing
+    let mut content = String::new();
+    for i in 0..100_000 {
+      content.push_str(&format!(
+        "Line {} - This is some test content to see how the editor performs with many lines\n",
+        i + 1
+      ));
+    }
+
+    let document = cx.new(|cx| Document::with_text(&content, cx));
+
+    Self {
+      document,
+      focus_handle: cx.focus_handle(),
+      selected_range: 0..0,
+      selection_reversed: false,
+      marked_range: None,
+      is_selecting: false,
+      line_layouts: HashMap::new(),
+      scroll_offset: 0.0,
+      max_cache_size: 200, // Cache max 200 lines (should cover ~3 viewports)
+      target_column: None,
+    }
+  }
+
+  pub fn document(&self) -> &Entity<Document> {
+    &self.document
+  }
+
+  fn invalidate_lines_from(&mut self, start_line: usize) {
+    self
+      .line_layouts
+      .retain(|&line_idx, _| line_idx < start_line);
+  }
+
+  pub fn ensure_cache_size(&mut self, viewport: Range<usize>) {
+    // If cache is too large, keep only lines near the viewport
+    if self.line_layouts.len() > self.max_cache_size {
+      let viewport_start = viewport.start.saturating_sub(50);
+      let viewport_end = viewport.end + 50;
+
+      self
+        .line_layouts
+        .retain(|&line_idx, _| line_idx >= viewport_start && line_idx < viewport_end);
+    }
+  }
+
+  fn ensure_cursor_visible(&mut self, window: &Window, cx: &mut Context<Self>) {
+    let document = self.document.read(cx);
+    let cursor_offset = self.cursor_offset();
+    let cursor_line = document.char_to_line(cursor_offset);
+    let total_lines = document.len_lines();
+
+    // Calculate how many lines are visible in the viewport
+    let line_height = window.line_height();
+    let viewport_height = px(800.0);
+    let visible_lines = (viewport_height / line_height).floor() as usize;
+
+    // Offset of 3 lines for context padding
+    let scroll_padding = 3;
+
+    // Calculate the visible range with padding
+    let scroll_start = self.scroll_offset as usize;
+    let scroll_end = scroll_start + visible_lines;
+
+    // Ensure cursor is within the visible range with padding
+    if cursor_line < scroll_start + scroll_padding {
+      // Cursor is too close to top, scroll up
+      self.scroll_offset = (cursor_line.saturating_sub(scroll_padding)) as f32;
+    } else if cursor_line >= scroll_end.saturating_sub(scroll_padding) {
+      // Cursor is too close to bottom, scroll down
+      let target_line = cursor_line + scroll_padding;
+      self.scroll_offset = (target_line as f32 - visible_lines as f32 + 1.0).max(0.0);
+    }
+
+    // Clamp scroll_offset to valid range
+    let max_scroll = (total_lines as f32 - visible_lines as f32).max(0.0);
+    self.scroll_offset = self.scroll_offset.max(0.0).min(max_scroll);
+  }
+
+  fn enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    let cursor = self.cursor_offset();
+    let current_line = self.document.read(cx).char_to_line(cursor);
+
+    self.document.update(cx, |doc, cx| {
+      doc.insert_char(cursor, '\n', cx);
+    });
+
+    // Invalidate cache for all lines from current line onwards
+    self.invalidate_lines_from(current_line);
+
+    self.ensure_cursor_visible(window, cx);
+    cx.notify();
+  }
+
+  fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
+    let new_cursor = {
+      let document = self.document.read(cx);
+      let cursor_offset = self.cursor_offset();
+      let current_line = document.char_to_line(cursor_offset);
+
+      if current_line > 0 {
+        if self.target_column.is_none() {
+          let line_start = document.line_to_char(current_line);
+          self.target_column = Some(cursor_offset - line_start);
+        }
+
+        let target_column = self.target_column.unwrap();
+
+        // Calculate new position in target line
+        let target_line = current_line - 1;
+        let target_start = document.line_to_char(target_line);
+        let target_len = document.line_content(target_line).unwrap_or_default().len();
+
+        Some(target_start + target_column.min(target_len))
+      } else {
+        // On first line, go to beginning of buffer
+        self.target_column = None;
+        Some(0)
+      }
+    };
+
+    if let Some(cursor) = new_cursor {
+      self.move_to(cursor, cx);
+      self.ensure_cursor_visible(window, cx);
+    }
+  }
+
+  fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
+    let new_cursor = {
+      let document = self.document.read(cx);
+      let cursor_offset = self.cursor_offset();
+      let current_line = document.char_to_line(cursor_offset);
+
+      if current_line < document.len_lines().saturating_sub(1) {
+        if self.target_column.is_none() {
+          let line_start = document.line_to_char(current_line);
+          self.target_column = Some(cursor_offset - line_start);
+        }
+
+        let target_column = self.target_column.unwrap();
+
+        let target_line = current_line + 1;
+        let target_start = document.line_to_char(target_line);
+        let target_len = document.line_content(target_line).unwrap_or_default().len();
+
+        Some(target_start + target_column.min(target_len))
+      } else {
+        self.target_column = None;
+        Some(document.len())
+      }
+    };
+
+    if let Some(cursor) = new_cursor {
+      self.move_to(cursor, cx);
+      self.ensure_cursor_visible(window, cx);
+    }
+  }
+
+  fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.move_to(self.previous_boundary(self.cursor_offset(), cx), cx);
+    } else {
+      self.move_to(self.selected_range.start, cx)
+    }
+  }
+
+  fn alt_left(&mut self, _: &AltLeft, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.move_to(self.previous_word_boundary(self.cursor_offset(), cx), cx);
+    } else {
+      self.move_to(self.selected_range.start, cx)
+    }
+  }
+
+  fn cmd_left(&mut self, _: &CmdLeft, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    let document = self.document.read(cx);
+    let cursor = self.cursor_offset();
+    let line = document.char_to_line(cursor);
+    let line_start = document.line_to_char(line);
+    self.move_to(line_start, cx);
+  }
+
+  fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.move_to(self.next_boundary(self.selected_range.end, cx), cx);
+    } else {
+      self.move_to(self.selected_range.end, cx)
+    }
+  }
+
+  fn alt_right(&mut self, _: &AltRight, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.move_to(self.next_word_boundary(self.selected_range.end, cx), cx);
+    } else {
+      self.move_to(self.selected_range.end, cx)
+    }
+  }
+
+  fn cmd_right(&mut self, _: &CmdRight, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    let document = self.document.read(cx);
+    let cursor = self.cursor_offset();
+    let line = document.char_to_line(cursor);
+    let line_range = document.line_range(line).unwrap_or(0..0);
+    // Go to end of line content (before the newline)
+    let line_content = document.line_content(line).unwrap_or_default();
+    let line_end = line_range.start + line_content.len();
+    self.move_to(line_end, cx);
+  }
+
+  fn cmd_up(&mut self, _: &CmdUp, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None; // Reset target column on jump
+    self.move_to(0, cx);
+    self.ensure_cursor_visible(window, cx);
+  }
+
+  fn cmd_down(&mut self, _: &CmdDown, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None; // Reset target column on jump
+    let document = self.document.read(cx);
+    self.move_to(document.len(), cx);
+    self.ensure_cursor_visible(window, cx);
+  }
+
+  fn select_cmd_left(&mut self, _: &SelectCmdLeft, _: &mut Window, cx: &mut Context<Self>) {
+    let document = self.document.read(cx);
+    let cursor = self.cursor_offset();
+    let line = document.char_to_line(cursor);
+    let line_start = document.line_to_char(line);
+    self.select_to(line_start, cx);
+  }
+
+  fn select_cmd_right(&mut self, _: &SelectCmdRight, _: &mut Window, cx: &mut Context<Self>) {
+    let document = self.document.read(cx);
+    let cursor = self.cursor_offset();
+    let line = document.char_to_line(cursor);
+    let line_range = document.line_range(line).unwrap_or(0..0);
+    let line_content = document.line_content(line).unwrap_or_default();
+    let line_end = line_range.start + line_content.len();
+    self.select_to(line_end, cx);
+  }
+
+  fn select_cmd_up(&mut self, _: &SelectCmdUp, window: &mut Window, cx: &mut Context<Self>) {
+    self.select_to(0, cx);
+    self.ensure_cursor_visible(window, cx);
+  }
+
+  fn select_cmd_down(&mut self, _: &SelectCmdDown, window: &mut Window, cx: &mut Context<Self>) {
+    let document = self.document.read(cx);
+    self.select_to(document.len(), cx);
+    self.ensure_cursor_visible(window, cx);
+  }
+
+  fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+    // Keep the anchor point of the selection
+    let anchor = if self.selection_reversed {
+      self.selected_range.end
+    } else {
+      self.selected_range.start
+    };
+
+    // Calculate new cursor position (same logic as up())
+    let new_cursor = {
+      let document = self.document.read(cx);
+      let cursor_offset = self.cursor_offset();
+      let current_line = document.char_to_line(cursor_offset);
+
+      if current_line > 0 {
+        if self.target_column.is_none() {
+          let line_start = document.line_to_char(current_line);
+          self.target_column = Some(cursor_offset - line_start);
+        }
+
+        let target_column = self.target_column.unwrap();
+
+        let target_line = current_line - 1;
+        let target_start = document.line_to_char(target_line);
+        let target_len = document.line_content(target_line).unwrap_or_default().len();
+
+        Some(target_start + target_column.min(target_len))
+      } else {
+        self.target_column = None;
+        Some(0)
+      }
+    };
+
+    // Move cursor and extend selection
+    let cursor = new_cursor.unwrap();
+    if anchor <= cursor {
+      self.selected_range = anchor..cursor;
+      self.selection_reversed = false;
+    } else {
+      self.selected_range = cursor..anchor;
+      self.selection_reversed = true;
+    }
+    self.ensure_cursor_visible(window, cx);
+    cx.notify();
+  }
+
+  fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+    // Keep the anchor point of the selection
+    let anchor = if self.selection_reversed {
+      self.selected_range.end
+    } else {
+      self.selected_range.start
+    };
+
+    // Calculate new cursor position (same logic as down())
+    let new_cursor = {
+      let document = self.document.read(cx);
+      let cursor_offset = self.cursor_offset();
+      let current_line = document.char_to_line(cursor_offset);
+      let total_lines = document.len_lines();
+
+      if current_line + 1 < total_lines {
+        if self.target_column.is_none() {
+          let line_start = document.line_to_char(current_line);
+          self.target_column = Some(cursor_offset - line_start);
+        }
+
+        let target_column = self.target_column.unwrap();
+
+        let target_line = current_line + 1;
+        let target_start = document.line_to_char(target_line);
+        let target_len = document.line_content(target_line).unwrap_or_default().len();
+
+        Some(target_start + target_column.min(target_len))
+      } else {
+        // On last line, go to end of buffer
+        self.target_column = None;
+        Some(document.len())
+      }
+    };
+
+    // Move cursor and extend selection
+    let cursor = new_cursor.unwrap();
+    if anchor <= cursor {
+      self.selected_range = anchor..cursor;
+      self.selection_reversed = false;
+    } else {
+      self.selected_range = cursor..anchor;
+      self.selection_reversed = true;
+    }
+    self.ensure_cursor_visible(window, cx);
+    cx.notify();
+  }
+
+  fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    self.select_to(self.previous_boundary(self.cursor_offset(), cx), cx);
+  }
+
+  fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    self.select_to(self.previous_word_boundary(self.cursor_offset(), cx), cx);
+  }
+
+  fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    self.select_to(self.next_boundary(self.cursor_offset(), cx), cx);
+  }
+
+  fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    self.select_to(self.next_word_boundary(self.cursor_offset(), cx), cx);
+  }
+
+  fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    let doc_len = self.document.read(cx).len();
+
+    self.move_to(0, cx);
+    self.select_to(doc_len, cx);
+  }
+
+  fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    self.move_to(0, cx);
+  }
+
+  fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    let doc_len = self.document.read(cx).len();
+    self.move_to(doc_len, cx);
+  }
+
+  fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.select_to(self.previous_boundary(self.cursor_offset(), cx), cx)
+    }
+    self.replace_text_in_range(None, "", window, cx)
+  }
+
+  fn backspace_word(&mut self, _: &BackspaceWord, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.select_to(self.previous_word_boundary(self.cursor_offset(), cx), cx)
+    }
+    self.replace_text_in_range(None, "", window, cx)
+  }
+
+  fn backspace_all(&mut self, _: &BackspaceAll, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+
+    let document = self.document.read(cx);
+    let cursor = self.cursor_offset();
+    let line = document.char_to_line(cursor);
+    let line_start = document.line_to_char(line);
+    self.select_to(line_start, cx);
+
+    self.replace_text_in_range(None, "", window, cx)
+  }
+
+  fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if self.selected_range.is_empty() {
+      self.select_to(self.next_boundary(self.cursor_offset(), cx), cx)
+    }
+    self.replace_text_in_range(None, "", window, cx)
+  }
+
+  pub fn mouse_left_down(
+    &mut self,
+    event: &MouseDownEvent,
+    position_map: &PositionMap,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.target_column = None;
+    self.is_selecting = true;
+
+    let document = self.document.read(cx);
+    let Some(offset) = position_map.point_for_position(event.position, document) else {
+      return;
+    };
+
+    if event.modifiers.shift {
+      self.select_to(offset, cx);
+    } else {
+      self.move_to(offset, cx);
+    }
+  }
+
+  pub fn mouse_left_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
+    self.is_selecting = false;
+  }
+
+  pub fn mouse_dragged(
+    &mut self,
+    event: &MouseMoveEvent,
+    position_map: &PositionMap,
+    _: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    if !self.is_selecting {
+      return;
+    }
+
+    let document = self.document.read(cx);
+    let Some(offset) = position_map.point_for_position(event.position, document) else {
+      return;
+    };
+
+    self.select_to(offset, cx);
+  }
+
+  fn show_character_palette(
+    &mut self,
+    _: &ShowCharacterPalette,
+    window: &mut Window,
+    _: &mut Context<Self>,
+  ) {
+    window.show_character_palette();
+  }
+
+  fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+      self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+    }
+  }
+
+  fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+    if !self.selected_range.is_empty() {
+      cx.write_to_clipboard(ClipboardItem::new_string(
+        self
+          .document
+          .read(cx)
+          .slice_to_string(self.selected_range.clone()),
+      ));
+    }
+  }
+
+  fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+    self.target_column = None;
+    if !self.selected_range.is_empty() {
+      cx.write_to_clipboard(ClipboardItem::new_string(
+        self
+          .document
+          .read(cx)
+          .slice_to_string(self.selected_range.clone()),
+      ));
+      self.replace_text_in_range(None, "", window, cx)
+    }
+  }
+
+  fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+    self.selected_range = offset..offset;
+
+    cx.notify();
+  }
+
+  pub fn cursor_offset(&self) -> usize {
+    if self.selection_reversed {
+      self.selected_range.start
+    } else {
+      self.selected_range.end
+    }
+  }
+
+  fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+    if self.selection_reversed {
+      self.selected_range.start = offset
+    } else {
+      self.selected_range.end = offset
+    };
+    if self.selected_range.end < self.selected_range.start {
+      self.selection_reversed = !self.selection_reversed;
+      self.selected_range = self.selected_range.end..self.selected_range.start;
+    }
+    cx.notify()
+  }
+
+  fn offset_from_utf16(&self, offset: usize, cx: &App) -> usize {
+    let document = self.document.read(cx);
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+
+    for ch in document.chars() {
+      if utf16_count >= offset {
+        break;
+      }
+      utf16_count += ch.len_utf16();
+      utf8_offset += ch.len_utf8();
+    }
+
+    utf8_offset
+  }
+
+  fn offset_to_utf16(&self, offset: usize, cx: &App) -> usize {
+    let document = self.document.read(cx);
+    let mut utf16_offset = 0;
+    let mut utf8_count = 0;
+
+    for ch in document.chars() {
+      if utf8_count >= offset {
+        break;
+      }
+      utf8_count += ch.len_utf8();
+      utf16_offset += ch.len_utf16();
+    }
+
+    utf16_offset
+  }
+
+  fn range_to_utf16(&self, range: &Range<usize>, cx: &App) -> Range<usize> {
+    self.offset_to_utf16(range.start, cx)..self.offset_to_utf16(range.end, cx)
+  }
+
+  fn range_from_utf16(&self, range_utf16: &Range<usize>, cx: &App) -> Range<usize> {
+    self.offset_from_utf16(range_utf16.start, cx)..self.offset_from_utf16(range_utf16.end, cx)
+  }
+
+  fn previous_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
+    let doc = self.document.read(cx);
+    let content = doc.graphemes();
+
+    content
+      .grapheme_indices(true)
+      .rev()
+      .find_map(|(idx, _)| (idx < offset).then_some(idx))
+      .unwrap_or(0)
+  }
+
+  fn previous_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
+    if offset == 0 {
+      return 0;
+    }
+
+    let doc = self.document.read(cx);
+    let bytes = doc.as_bytes();
+    let mut idx = offset - 1;
+
+    // Skip any trailing spaces
+    while idx > 0 && bytes[idx].is_ascii_whitespace() {
+      idx -= 1;
+    }
+
+    // Move to the start of the word
+    while idx > 0 && !bytes[idx - 1].is_ascii_whitespace() {
+      idx -= 1;
+    }
+
+    idx
+  }
+
+  fn next_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
+    let doc = self.document.read(cx);
+    let content = doc.graphemes();
+
+    content
+      .grapheme_indices(true)
+      .find_map(|(idx, _)| (idx > offset).then_some(idx))
+      .unwrap_or(doc.len())
+  }
+
+  fn next_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
+    let doc = self.document.read(cx);
+    let bytes = doc.as_bytes();
+    let mut idx = offset;
+
+    // Skip any leading spaces
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+      idx += 1;
+    }
+
+    // Move to the end of the word
+    while idx < bytes.len() && !bytes[idx].is_ascii_whitespace() {
+      idx += 1;
+    }
+
+    idx
+  }
+}
+
+impl EntityInputHandler for Editor {
+  fn text_for_range(
+    &mut self,
+    range_utf16: Range<usize>,
+    actual_range: &mut Option<Range<usize>>,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> Option<String> {
+    let doc = self.document.read(cx);
+    let range = self.range_from_utf16(&range_utf16, cx);
+    actual_range.replace(self.range_to_utf16(&range, cx));
+    Some(doc.slice_to_string(range))
+  }
+
+  fn selected_text_range(
+    &mut self,
+    _ignore_disabled_input: bool,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> Option<UTF16Selection> {
+    Some(UTF16Selection {
+      range: self.range_to_utf16(&self.selected_range, cx),
+      reversed: self.selection_reversed,
+    })
+  }
+
+  fn marked_text_range(
+    &self,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> Option<Range<usize>> {
+    self
+      .marked_range
+      .as_ref()
+      .map(|range| self.range_to_utf16(range, cx))
+  }
+
+  fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    self.marked_range = None;
+  }
+
+  fn replace_text_in_range(
+    &mut self,
+    range_utf16: Option<Range<usize>>,
+    new_text: &str,
+    _: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let range = range_utf16
+      .as_ref()
+      .map(|range_utf16| self.range_from_utf16(range_utf16, cx))
+      .or(self.marked_range.clone())
+      .unwrap_or(self.selected_range.clone());
+
+    let start_line = self.document.read(cx).char_to_line(range.start);
+
+    self.document.update(cx, |doc, cx| {
+      doc.replace(range.clone(), new_text, cx);
+    });
+
+    // Invalidate cache for all lines from the start of the edit
+    self.invalidate_lines_from(start_line);
+
+    self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+    self.marked_range.take();
+    cx.notify();
+  }
+
+  fn replace_and_mark_text_in_range(
+    &mut self,
+    range_utf16: Option<Range<usize>>,
+    new_text: &str,
+    new_selected_range_utf16: Option<Range<usize>>,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let range = range_utf16
+      .as_ref()
+      .map(|range_utf16| self.range_from_utf16(range_utf16, cx))
+      .or(self.marked_range.clone())
+      .unwrap_or(self.selected_range.clone());
+
+    let start_line = self.document.read(cx).char_to_line(range.start);
+
+    self.document.update(cx, |doc, cx| {
+      doc.replace(range.clone(), new_text, cx);
+    });
+
+    // Invalidate cache for all lines from the start of the edit
+    self.invalidate_lines_from(start_line);
+
+    if !new_text.is_empty() {
+      self.marked_range = Some(range.start..range.start + new_text.len());
+    } else {
+      self.marked_range = None;
+    }
+    self.selected_range = new_selected_range_utf16
+      .as_ref()
+      .map(|range_utf16| self.range_from_utf16(range_utf16, cx))
+      .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+      .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+
+    cx.notify();
+  }
+
+  fn bounds_for_range(
+    &mut self,
+    _range_utf16: Range<usize>,
+    _bounds: Bounds<Pixels>,
+    _window: &mut Window,
+    _cx: &mut Context<Self>,
+  ) -> Option<Bounds<Pixels>> {
+    None
+  }
+
+  fn character_index_for_point(
+    &mut self,
+    _point: Point<Pixels>,
+    _window: &mut Window,
+    _cx: &mut Context<Self>,
+  ) -> Option<usize> {
+    None
+  }
+}
+
+impl Render for Editor {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    div()
+      .key_context("Editor")
+      .track_focus(&self.focus_handle(cx))
+      .cursor(CursorStyle::IBeam)
+      .size_full()
+      .on_action(cx.listener(Self::enter))
+      .on_action(cx.listener(Self::backspace))
+      .on_action(cx.listener(Self::backspace_word))
+      .on_action(cx.listener(Self::backspace_all))
+      .on_action(cx.listener(Self::delete))
+      .on_action(cx.listener(Self::up))
+      .on_action(cx.listener(Self::down))
+      .on_action(cx.listener(Self::left))
+      .on_action(cx.listener(Self::alt_left))
+      .on_action(cx.listener(Self::cmd_left))
+      .on_action(cx.listener(Self::right))
+      .on_action(cx.listener(Self::alt_right))
+      .on_action(cx.listener(Self::cmd_right))
+      .on_action(cx.listener(Self::cmd_up))
+      .on_action(cx.listener(Self::cmd_down))
+      .on_action(cx.listener(Self::select_cmd_left))
+      .on_action(cx.listener(Self::select_cmd_right))
+      .on_action(cx.listener(Self::select_cmd_up))
+      .on_action(cx.listener(Self::select_cmd_down))
+      .on_action(cx.listener(Self::select_up))
+      .on_action(cx.listener(Self::select_down))
+      .on_action(cx.listener(Self::select_left))
+      .on_action(cx.listener(Self::select_word_left))
+      .on_action(cx.listener(Self::select_right))
+      .on_action(cx.listener(Self::select_word_right))
+      .on_action(cx.listener(Self::select_all))
+      .on_action(cx.listener(Self::home))
+      .on_action(cx.listener(Self::end))
+      .on_action(cx.listener(Self::show_character_palette))
+      .on_action(cx.listener(Self::paste))
+      .on_action(cx.listener(Self::cut))
+      .on_action(cx.listener(Self::copy))
+      .when_else(
+        self.focus_handle(cx).is_focused(window),
+        |d| d.border(px(2.)).border_color(green()),
+        |d| d.border(px(2.)).border_color(red()),
+      )
+      .bg(white())
+      .child(EditorElement::new(cx.entity().clone()))
+  }
+}
+
+impl Focusable for Editor {
+  fn focus_handle(&self, _: &App) -> FocusHandle {
+    self.focus_handle.clone()
+  }
+}
