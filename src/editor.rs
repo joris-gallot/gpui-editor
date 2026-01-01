@@ -11,6 +11,13 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+// Default viewport height before first render
+const DEFAULT_VIEWPORT_HEIGHT: f32 = 800.0;
+// Maximum number of cached shaped lines
+const MAX_CACHE_SIZE: usize = 200;
+// Number of lines of padding when auto-scrolling to cursor
+const SCROLL_PADDING: usize = 3;
+
 actions!(
   editor,
   [
@@ -61,6 +68,7 @@ pub struct Editor {
   // Performance: cache and viewport
   pub line_layouts: HashMap<usize, Arc<ShapedLine>>,
   pub scroll_offset: f32, // In lines (0.0 = top)
+  pub viewport_height: Pixels,
 
   // Cache size limit to prevent memory issues with large files
   max_cache_size: usize,
@@ -91,7 +99,8 @@ impl Editor {
       is_selecting: false,
       line_layouts: HashMap::new(),
       scroll_offset: 0.0,
-      max_cache_size: 200, // Cache max 200 lines (should cover ~3 viewports)
+      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT), // Will be updated from actual bounds
+      max_cache_size: MAX_CACHE_SIZE,
       target_column: None,
     }
   }
@@ -132,11 +141,10 @@ impl Editor {
 
     // Calculate how many lines are visible in the viewport
     let line_height = window.line_height();
-    let viewport_height = px(800.0);
-    let visible_lines = (viewport_height / line_height).floor() as usize;
+    let visible_lines = (self.viewport_height / line_height).floor() as usize;
 
-    // Offset of 3 lines for context padding
-    let scroll_padding = 3;
+    // Offset for context padding when scrolling
+    let scroll_padding = SCROLL_PADDING;
 
     // Calculate the visible range with padding
     let scroll_start = self.scroll_offset as usize;

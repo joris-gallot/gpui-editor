@@ -1,6 +1,6 @@
 use crate::buffer::TextBuffer;
 use gpui::Context;
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 pub struct Document {
   buffer: TextBuffer,
@@ -35,7 +35,7 @@ impl Document {
     self.buffer.is_empty()
   }
 
-  pub fn line_content(&self, line_idx: usize) -> Option<String> {
+  pub fn line_content(&self, line_idx: usize) -> Option<Cow<'_, str>> {
     self.buffer.line_content(line_idx)
   }
 
@@ -116,9 +116,9 @@ mod tests {
     let doc = cx.new(|cx| Document::with_text("line1\nline2\nline3", cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len_lines(), 3);
-      assert_eq!(doc.line_content(0), Some("line1".to_string()));
-      assert_eq!(doc.line_content(1), Some("line2".to_string()));
-      assert_eq!(doc.line_content(2), Some("line3".to_string()));
+      assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
+      assert_eq!(doc.line_content(1).as_deref(), Some("line2"));
+      assert_eq!(doc.line_content(2).as_deref(), Some("line3"));
     });
   }
 
@@ -170,9 +170,9 @@ mod tests {
     let doc = cx.new(|cx| Document::with_text("\n\n\n", cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len_lines(), 4);
-      assert_eq!(doc.line_content(0), Some("".to_string()));
-      assert_eq!(doc.line_content(1), Some("".to_string()));
-      assert_eq!(doc.line_content(2), Some("".to_string()));
+      assert_eq!(doc.line_content(0).as_deref(), Some(""));
+      assert_eq!(doc.line_content(1).as_deref(), Some(""));
+      assert_eq!(doc.line_content(2).as_deref(), Some(""));
     });
   }
 
@@ -182,10 +182,10 @@ mod tests {
     doc.update(cx, |doc, cx| {
       doc.replace(6..11, "new1\nnew2", cx);
       assert_eq!(doc.len_lines(), 4);
-      assert_eq!(doc.line_content(0), Some("line1".to_string()));
-      assert_eq!(doc.line_content(1), Some("new1".to_string()));
-      assert_eq!(doc.line_content(2), Some("new2".to_string()));
-      assert_eq!(doc.line_content(3), Some("line3".to_string()));
+      assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
+      assert_eq!(doc.line_content(1).as_deref(), Some("new1"));
+      assert_eq!(doc.line_content(2).as_deref(), Some("new2"));
+      assert_eq!(doc.line_content(3).as_deref(), Some("line3"));
     });
   }
 
@@ -193,7 +193,7 @@ mod tests {
   fn test_line_content_removes_newlines(cx: &mut TestAppContext) {
     let doc = cx.new(|cx| Document::with_text("line1\n", cx));
     doc.read_with(cx, |doc, _| {
-      assert_eq!(doc.line_content(0), Some("line1".to_string()));
+      assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
     });
   }
 
@@ -201,7 +201,7 @@ mod tests {
   fn test_line_content_removes_crlf(cx: &mut TestAppContext) {
     let doc = cx.new(|cx| Document::with_text("line1\r\n", cx));
     doc.read_with(cx, |doc, _| {
-      assert_eq!(doc.line_content(0), Some("line1".to_string()));
+      assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
     });
   }
 }

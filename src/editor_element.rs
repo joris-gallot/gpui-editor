@@ -8,6 +8,13 @@ use std::{ops::Range, rc::Rc, sync::Arc};
 
 use crate::{document::Document, editor::Editor};
 
+// Visual width for empty line selection indicator
+const NEWLINE_SELECTION_WIDTH: f32 = 4.0;
+// Scroll sensitivity for pixel-based scrolling (trackpad)
+const PIXEL_SCROLL_DIVISOR: f32 = 20.0;
+// Scroll sensitivity for line-based scrolling (mouse wheel)
+const LINE_SCROLL_MULTIPLIER: f32 = 3.0;
+
 /// Encapsulates layout information for mouse position -> text offset conversion
 #[derive(Clone)]
 pub struct PositionMap {
@@ -126,6 +133,10 @@ impl Element for EditorElement {
     window: &mut Window,
     cx: &mut App,
   ) -> Self::PrepaintState {
+    self.editor.update(cx, |editor, _| {
+      editor.viewport_height = bounds.size.height;
+    });
+
     let (viewport, selected_range, cursor_offset, mut shaped_lines, lines_to_shape) = {
       let editor = self.editor.read(cx);
       let document = editor.document().read(cx);
@@ -148,7 +159,10 @@ impl Element for EditorElement {
             shaped_lines.push((line_idx, Arc::clone(shaped)));
           }
           None => {
-            let line_content = document.line_content(line_idx).unwrap_or_default();
+            let line_content = document
+              .line_content(line_idx)
+              .map(|cow| cow.into_owned())
+              .unwrap_or_default();
             lines_to_shape.push((line_idx, line_content));
           }
         }
@@ -252,7 +266,7 @@ impl Element for EditorElement {
           // TODO: Improve visual for newline selection
           // If selection is empty on this line (selecting just the newline),
           let visual_x_end = if x_start == x_end {
-            x_end + px(4.0) // Small width to show newline selection
+            x_end + px(NEWLINE_SELECTION_WIDTH) // Small width to show newline selection
           } else {
             x_end
           };
@@ -360,8 +374,8 @@ impl Element for EditorElement {
             // Extract scroll delta (handle both pixel and line scrolling)
             // Note: Negative delta because scrolling down should increase scroll_offset
             let scroll_delta = match event.delta {
-              ScrollDelta::Pixels(point) => -(point.y / px(20.0)), // Pixel scrolling (trackpad)
-              ScrollDelta::Lines(point) => -(point.y * 3.0),       // Line scrolling (mouse wheel)
+              ScrollDelta::Pixels(point) => -(point.y / px(PIXEL_SCROLL_DIVISOR)), // Pixel scrolling (trackpad)
+              ScrollDelta::Lines(point) => -(point.y * LINE_SCROLL_MULTIPLIER), // Line scrolling (mouse wheel)
             };
 
             let new_scroll = (editor.scroll_offset + scroll_delta)

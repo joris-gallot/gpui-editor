@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use ropey::Rope;
 
@@ -50,20 +50,29 @@ impl TextBuffer {
     self.text.len_lines()
   }
 
-  pub fn line_content(&self, line_idx: usize) -> Option<String> {
+  /// Get line content without trailing newlines
+  /// Returns Cow<str> to avoid allocation when no newlines need to be removed
+  pub fn line_content(&self, line_idx: usize) -> Option<Cow<'_, str>> {
     if line_idx < self.len_lines() {
-      let mut line = self.text.line(line_idx).to_string();
+      let line_slice = self.text.line(line_idx);
 
-      // Remove newline characters as GPUI's shape_line doesn't accept them
-      if line.ends_with('\n') {
-        line.pop();
-
-        if line.ends_with('\r') {
-          line.pop();
-        }
+      // Try fast path: borrow if line is contiguous in memory and has no newlines
+      if let Some(line_str) = line_slice.as_str()
+        && !line_str.ends_with('\n')
+        && !line_str.ends_with('\r')
+      {
+        return Some(Cow::Borrowed(line_str));
       }
 
-      Some(line)
+      // Slow path: line crosses chunk boundaries or has newlines, must allocate
+      let mut owned = line_slice.to_string();
+      if owned.ends_with('\n') {
+        owned.pop();
+        if owned.ends_with('\r') {
+          owned.pop();
+        }
+      }
+      Some(Cow::Owned(owned))
     } else {
       None
     }
@@ -143,9 +152,9 @@ mod tests {
     let mut buffer = TextBuffer::new();
     buffer.insert(0, "first line\nsecond line\nthird line");
 
-    assert_eq!(buffer.line_content(0), Some("first line".to_string()));
-    assert_eq!(buffer.line_content(1), Some("second line".to_string()));
-    assert_eq!(buffer.line_content(2), Some("third line".to_string()));
+    assert_eq!(buffer.line_content(0).as_deref(), Some("first line"));
+    assert_eq!(buffer.line_content(1).as_deref(), Some("second line"));
+    assert_eq!(buffer.line_content(2).as_deref(), Some("third line"));
     assert_eq!(buffer.line_content(3), None);
   }
 
@@ -155,7 +164,7 @@ mod tests {
     buffer.insert(0, "line1\n");
 
     // Should not include the newline character
-    assert_eq!(buffer.line_content(0), Some("line1".to_string()));
+    assert_eq!(buffer.line_content(0).as_deref(), Some("line1"));
   }
 
   #[test]
@@ -164,7 +173,7 @@ mod tests {
     buffer.insert(0, "line1\r\n");
 
     // Should remove both \r and \n
-    assert_eq!(buffer.line_content(0), Some("line1".to_string()));
+    assert_eq!(buffer.line_content(0).as_deref(), Some("line1"));
   }
 
   #[test]
@@ -294,9 +303,9 @@ mod tests {
     buffer.insert(0, "\n\n\n");
 
     assert_eq!(buffer.len_lines(), 4); // 3 newlines create 4 lines
-    assert_eq!(buffer.line_content(0), Some("".to_string()));
-    assert_eq!(buffer.line_content(1), Some("".to_string()));
-    assert_eq!(buffer.line_content(2), Some("".to_string()));
+    assert_eq!(buffer.line_content(0).as_deref(), Some(""));
+    assert_eq!(buffer.line_content(1).as_deref(), Some(""));
+    assert_eq!(buffer.line_content(2).as_deref(), Some(""));
   }
 
   #[test]
@@ -308,10 +317,10 @@ mod tests {
     buffer.replace(6..11, "new1\nnew2");
 
     assert_eq!(buffer.len_lines(), 4);
-    assert_eq!(buffer.line_content(0), Some("line1".to_string()));
-    assert_eq!(buffer.line_content(1), Some("new1".to_string()));
-    assert_eq!(buffer.line_content(2), Some("new2".to_string()));
-    assert_eq!(buffer.line_content(3), Some("line3".to_string()));
+    assert_eq!(buffer.line_content(0).as_deref(), Some("line1"));
+    assert_eq!(buffer.line_content(1).as_deref(), Some("new1"));
+    assert_eq!(buffer.line_content(2).as_deref(), Some("new2"));
+    assert_eq!(buffer.line_content(3).as_deref(), Some("line3"));
   }
 
   #[test]

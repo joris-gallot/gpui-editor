@@ -8,6 +8,10 @@ mod document;
 mod editor;
 mod editor_element;
 
+// Initial window size
+const INITIAL_WINDOW_WIDTH: f32 = 1200.0;
+const INITIAL_WINDOW_HEIGHT: f32 = 800.0;
+
 use editor::{
   AltLeft, AltRight, Backspace, BackspaceAll, BackspaceWord, CmdDown, CmdLeft, CmdRight, CmdUp,
   Copy, Cut, Delete, Down, Editor, End, Enter, Home, Left, Paste, Quit, Right, SelectAll,
@@ -40,7 +44,11 @@ impl Render for EditorExample {
 
 fn main() {
   Application::new().run(|cx: &mut App| {
-    let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+    let bounds = Bounds::centered(
+      None,
+      size(px(INITIAL_WINDOW_WIDTH), px(INITIAL_WINDOW_HEIGHT)),
+      cx,
+    );
 
     cx.bind_keys([
       KeyBinding::new("enter", Enter, None),
