@@ -2150,7 +2150,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-base-editor"
+name = "gpui-editor"
 version = "0.1.0"
 dependencies = [
  "gpui",
