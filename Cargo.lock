@@ -2157,7 +2157,6 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "ropey",
- "tree-sitter",
  "tree-sitter-highlight",
  "tree-sitter-rust",
  "tree-sitter-typescript",
