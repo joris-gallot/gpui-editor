@@ -1,8 +1,8 @@
 use gpui::{
-  blue, fill, point, prelude::*, px, relative, rgba, size, App, Bounds, DispatchPhase, ElementId,
-  ElementInputHandler, Entity, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
-  MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta,
-  ScrollWheelEvent, ShapedLine, Style, TextRun, TextStyle, Window,
+  App, Bounds, DispatchPhase, ElementId, ElementInputHandler, Entity, GlobalElementId,
+  InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+  PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextRun, TextStyle,
+  Window, fill, point, prelude::*, px, relative, size,
 };
 use std::{ops::Range, rc::Rc, sync::Arc};
 
@@ -204,14 +204,13 @@ impl Element for EditorElement {
     cx: &mut App,
   ) -> Self::PrepaintState {
     // Check if syntax highlights have been updated and invalidate cache if needed
-    let highlights_version = self
+    let highlights_version = *self
       .editor
       .read(cx)
       .document()
       .read(cx)
       .highlights_version
-      .read()
-      .clone();
+      .read();
     self.editor.update(cx, |editor, _| {
       editor.viewport_height = bounds.size.height;
 
@@ -329,7 +328,7 @@ impl Element for EditorElement {
             point(bounds.left() + cursor_x, y),
             size(px(2.), line_height),
           ),
-          blue(),
+          theme.cursor(),
         ))
       } else {
         None
@@ -377,7 +376,7 @@ impl Element for EditorElement {
               point(bounds.left() + x_start, y),
               point(bounds.left() + visual_x_end, y + line_height),
             ),
-            rgba(0x3311ff30),
+            theme.selection(),
           ));
         }
       }
@@ -513,7 +512,7 @@ impl Element for EditorElement {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gpui::{px, size, TestAppContext};
+  use gpui::{TestAppContext, px, size};
 
   // Helper to create test bounds
   fn test_bounds(width: f32, height: f32) -> Bounds<Pixels> {
