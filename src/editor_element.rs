@@ -1,12 +1,12 @@
 use gpui::{
   App, Bounds, DispatchPhase, ElementId, ElementInputHandler, Entity, GlobalElementId,
   InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-  PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
-  blue, fill, point, prelude::*, px, relative, rgba, size,
+  PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextRun, TextStyle,
+  Window, fill, point, prelude::*, px, relative, size,
 };
 use std::{ops::Range, rc::Rc, sync::Arc};
 
-use crate::{document::Document, editor::Editor};
+use crate::{document::Document, editor::Editor, syntax::HighlightSpan, theme::Theme};
 
 // Visual width for empty line selection indicator
 const NEWLINE_SELECTION_WIDTH: f32 = 4.0;
@@ -54,6 +54,76 @@ impl PositionMap {
     let line_start = document.line_to_char(actual_row);
     Some(line_start + column)
   }
+}
+
+/// Helper to convert syntax highlights to TextRuns for rendering
+fn highlights_to_text_runs(
+  highlights: &[HighlightSpan],
+  line_text: &str,
+  theme: &Theme,
+  base_style: &TextStyle,
+  line_start_offset: usize,
+) -> Vec<TextRun> {
+  let mut runs = Vec::new();
+  let line_len = line_text.len();
+  let line_range = line_start_offset..(line_start_offset + line_len);
+  let mut current_pos = 0;
+
+  // Filter and clip highlights for this line
+  let mut line_highlights: Vec<_> = highlights
+    .iter()
+    .filter_map(|h| {
+      if h.byte_range.start < line_range.end && h.byte_range.end > line_range.start {
+        let start = h.byte_range.start.max(line_range.start) - line_range.start;
+        let end = h.byte_range.end.min(line_range.end) - line_range.start;
+        Some((start..end, h.token_type))
+      } else {
+        None
+      }
+    })
+    .collect();
+
+  line_highlights.sort_by_key(|(range, _)| range.start);
+
+  for (range, token_type) in line_highlights {
+    // Gap before highlight (normal text)
+    if range.start > current_pos {
+      runs.push(TextRun {
+        len: range.start - current_pos,
+        font: base_style.font(),
+        color: base_style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+      });
+    }
+
+    // The highlighted span
+    runs.push(TextRun {
+      len: range.len(),
+      font: base_style.font(),
+      color: theme.syntax().color_for_token(token_type),
+      background_color: None,
+      underline: None,
+      strikethrough: None,
+    });
+
+    current_pos = range.end;
+  }
+
+  // Final gap
+  if current_pos < line_len {
+    runs.push(TextRun {
+      len: line_len - current_pos,
+      font: base_style.font(),
+      color: base_style.color,
+      background_color: None,
+      underline: None,
+      strikethrough: None,
+    });
+  }
+
+  runs
 }
 
 pub struct EditorElement {
@@ -133,8 +203,22 @@ impl Element for EditorElement {
     window: &mut Window,
     cx: &mut App,
   ) -> Self::PrepaintState {
+    // Check if syntax highlights have been updated and invalidate cache if needed
+    let highlights_version = *self
+      .editor
+      .read(cx)
+      .document()
+      .read(cx)
+      .highlights_version
+      .read();
     self.editor.update(cx, |editor, _| {
       editor.viewport_height = bounds.size.height;
+
+      // If highlights have been updated since last render, invalidate the cache
+      if highlights_version > editor.last_highlights_version {
+        editor.line_layouts.clear();
+        editor.last_highlights_version = highlights_version;
+      }
     });
 
     let (viewport, selected_range, cursor_offset, mut shaped_lines, lines_to_shape) = {
@@ -181,19 +265,35 @@ impl Element for EditorElement {
     let font_size = style.font_size.to_pixels(window.rem_size());
     let line_height = window.line_height();
 
+    // Get theme for syntax highlighting colors
+    let theme = self.editor.read(cx).theme.clone();
+
     let mut newly_shaped = Vec::new();
     for (line_idx, line_content) in lines_to_shape {
-      let run = TextRun {
-        len: line_content.len(),
-        font: style.font(),
-        color: style.color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
+      // Try to get syntax highlights for this line
+      let document = self.editor.read(cx).document().read(cx);
+      let line_range = document.line_range(line_idx);
+
+      let runs = if let (Some(highlights), Some(range)) =
+        (document.get_highlights_for_line(line_idx), line_range)
+      {
+        // Render with syntax highlighting colors
+        highlights_to_text_runs(&highlights, &line_content, &theme, &style, range.start)
+      } else {
+        // Fallback: plain text rendering (progressive rendering!)
+        vec![TextRun {
+          len: line_content.len(),
+          font: style.font(),
+          color: style.color,
+          background_color: None,
+          underline: None,
+          strikethrough: None,
+        }]
       };
+
       let shaped = window
         .text_system()
-        .shape_line(line_content.into(), font_size, &[run], None);
+        .shape_line(line_content.into(), font_size, &runs, None);
       newly_shaped.push((line_idx, shaped));
     }
 
@@ -228,7 +328,7 @@ impl Element for EditorElement {
             point(bounds.left() + cursor_x, y),
             size(px(2.), line_height),
           ),
-          blue(),
+          theme.cursor(),
         ))
       } else {
         None
@@ -276,7 +376,7 @@ impl Element for EditorElement {
               point(bounds.left() + x_start, y),
               point(bounds.left() + visual_x_end, y + line_height),
             ),
-            rgba(0x3311ff30),
+            theme.selection(),
           ));
         }
       }

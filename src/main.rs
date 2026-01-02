@@ -7,6 +7,10 @@ mod buffer;
 mod document;
 mod editor;
 mod editor_element;
+mod gutter_element;
+mod languages;
+mod syntax;
+mod theme;
 
 // Initial window size
 const INITIAL_WINDOW_WIDTH: f32 = 1200.0;

@@ -1,23 +1,50 @@
 use crate::buffer::TextBuffer;
-use gpui::Context;
-use std::{borrow::Cow, ops::Range, time::Instant};
+use crate::languages;
+use crate::syntax::{HighlightSpan, SyntaxHighlighter};
+use gpui::{Context, Task};
+use parking_lot::RwLock;
+use std::{
+  borrow::Cow,
+  ops::Range,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
 pub struct Document {
   pub buffer: TextBuffer,
+
+  // Syntax highlighting support
+  highlighter: Option<SyntaxHighlighter>,
+  highlights: Arc<RwLock<Vec<HighlightSpan>>>,
+  pending_highlight_task: Option<Task<()>>,
+
+  // Flag to track when highlights have been updated (for cache invalidation)
+  pub highlights_version: Arc<RwLock<usize>>,
 }
 
 impl Document {
-  #[cfg(test)]
-  pub fn new(_cx: &mut Context<Self>) -> Self {
-    Self {
-      buffer: TextBuffer::new(),
-    }
-  }
+  /// Create document with language detection for syntax highlighting
+  pub fn new(text: &str, file_ext: Option<&str>, cx: &mut Context<Self>) -> Self {
+    let buffer = TextBuffer::from_text(text);
 
-  pub fn with_text(text: &str, _cx: &mut Context<Self>) -> Self {
-    Self {
-      buffer: TextBuffer::from_text(text),
+    let highlighter = file_ext
+      .and_then(languages::detect_language_config)
+      .map(SyntaxHighlighter::new);
+
+    let mut doc = Self {
+      buffer,
+      highlighter,
+      highlights: Arc::new(RwLock::new(Vec::new())),
+      pending_highlight_task: None,
+      highlights_version: Arc::new(RwLock::new(0)),
+    };
+
+    // Schedule initial highlighting
+    if doc.highlighter.is_some() {
+      doc.schedule_recompute_highlights(cx);
     }
+
+    doc
   }
 
   pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
@@ -101,6 +128,80 @@ impl Document {
   pub fn set_group_interval(&mut self, interval: std::time::Duration) {
     self.buffer.set_group_interval(interval);
   }
+
+  /// Get syntax highlights for a specific line
+  pub fn get_highlights_for_line(&self, line_idx: usize) -> Option<Vec<HighlightSpan>> {
+    let highlights = self.highlights.read();
+    let line_range = self.line_range(line_idx)?;
+
+    // Filter highlights that intersect this line
+    let line_highlights: Vec<_> = highlights
+      .iter()
+      .filter(|h| h.byte_range.start < line_range.end && h.byte_range.end > line_range.start)
+      .cloned()
+      .collect();
+
+    if line_highlights.is_empty() {
+      None
+    } else {
+      Some(line_highlights)
+    }
+  }
+
+  /// Schedule async re-highlighting with debouncing
+  pub fn schedule_recompute_highlights(&mut self, cx: &mut Context<Self>) {
+    // Cancel previous task
+    self.pending_highlight_task = None;
+
+    let Some(ref mut highlighter) = self.highlighter else {
+      return;
+    };
+
+    let text = self.buffer.slice_to_string(0..self.buffer.len());
+    let highlights_cache = self.highlights.clone();
+    let highlights_version = self.highlights_version.clone();
+
+    // Clone highlighter config for background work
+    let config = highlighter.config;
+
+    let task = cx.spawn(async move |this, cx| {
+      // Debounce: wait 150ms
+      cx.background_executor()
+        .timer(Duration::from_millis(150))
+        .await;
+
+      // Highlighting in background
+      let result = cx
+        .background_executor()
+        .spawn(async move {
+          let mut bg_highlighter = SyntaxHighlighter::new(config);
+          bg_highlighter.highlight_text(&text)
+        })
+        .await;
+
+      // Update cache
+      match result {
+        Ok(highlights) => {
+          *highlights_cache.write() = highlights;
+
+          // Increment version to signal that highlights have been updated
+          *highlights_version.write() += 1;
+
+          // Notify UI to re-render
+          let _ = this.update(cx, |_doc, cx| {
+            cx.notify();
+          });
+        }
+        Err(e) => {
+          eprintln!("Syntax highlighting failed: {}", e);
+          // Fallback: clear cache so we show plain text
+          highlights_cache.write().clear();
+        }
+      }
+    });
+
+    self.pending_highlight_task = Some(task);
+  }
 }
 
 #[cfg(test)]
@@ -110,7 +211,7 @@ mod tests {
 
   #[gpui::test]
   fn test_new_document(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len(), 0);
       assert!(doc.is_empty());
@@ -120,7 +221,7 @@ mod tests {
 
   #[gpui::test]
   fn test_with_text(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("hello world", cx));
+    let doc = cx.new(|cx| Document::new("hello world", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len(), 11);
       assert!(!doc.is_empty());
@@ -131,7 +232,7 @@ mod tests {
 
   #[gpui::test]
   fn test_insert_char(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("hello", cx));
+    let doc = cx.new(|cx| Document::new("hello", None, cx));
     doc.update(cx, |doc, cx| {
       doc.insert_char(5, '!', cx);
       assert_eq!(doc.len(), 6);
@@ -141,7 +242,7 @@ mod tests {
 
   #[gpui::test]
   fn test_replace(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("hello world", cx));
+    let doc = cx.new(|cx| Document::new("hello world", None, cx));
     doc.update(cx, |doc, cx| {
       doc.replace(6..11, "Rust", cx);
       assert_eq!(doc.slice_to_string(0..10), "hello Rust");
@@ -150,7 +251,7 @@ mod tests {
 
   #[gpui::test]
   fn test_multiline_document(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\nline2\nline3", cx));
+    let doc = cx.new(|cx| Document::new("line1\nline2\nline3", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len_lines(), 3);
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
@@ -161,7 +262,7 @@ mod tests {
 
   #[gpui::test]
   fn test_line_range(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("abc\ndef\nghi", cx));
+    let doc = cx.new(|cx| Document::new("abc\ndef\nghi", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_range(0), Some(0..4));
       assert_eq!(doc.line_range(1), Some(4..8));
@@ -171,7 +272,7 @@ mod tests {
 
   #[gpui::test]
   fn test_char_line_conversion(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("abc\ndef\nghi", cx));
+    let doc = cx.new(|cx| Document::new("abc\ndef\nghi", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.char_to_line(0), 0);
       assert_eq!(doc.char_to_line(4), 1);
@@ -185,7 +286,7 @@ mod tests {
 
   #[gpui::test]
   fn test_chars_iterator(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("abc", cx));
+    let doc = cx.new(|cx| Document::new("abc", None, cx));
     doc.read_with(cx, |doc, _| {
       let chars: Vec<char> = doc.chars().collect();
       assert_eq!(chars, vec!['a', 'b', 'c']);
@@ -194,7 +295,7 @@ mod tests {
 
   #[gpui::test]
   fn test_unicode_handling(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("héllo 世界", cx));
+    let doc = cx.new(|cx| Document::new("héllo 世界", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len(), 8);
       assert_eq!(doc.slice_to_string(0..5), "héllo");
@@ -204,7 +305,7 @@ mod tests {
 
   #[gpui::test]
   fn test_empty_lines(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("\n\n\n", cx));
+    let doc = cx.new(|cx| Document::new("\n\n\n", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len_lines(), 4);
       assert_eq!(doc.line_content(0).as_deref(), Some(""));
@@ -215,7 +316,7 @@ mod tests {
 
   #[gpui::test]
   fn test_replace_multiline(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\nline2\nline3", cx));
+    let doc = cx.new(|cx| Document::new("line1\nline2\nline3", None, cx));
     doc.update(cx, |doc, cx| {
       doc.replace(6..11, "new1\nnew2", cx);
       assert_eq!(doc.len_lines(), 4);
@@ -228,7 +329,7 @@ mod tests {
 
   #[gpui::test]
   fn test_line_content_removes_newlines(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\n", cx));
+    let doc = cx.new(|cx| Document::new("line1\n", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
     });
@@ -236,7 +337,7 @@ mod tests {
 
   #[gpui::test]
   fn test_line_content_removes_crlf(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\r\n", cx));
+    let doc = cx.new(|cx| Document::new("line1\r\n", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
     });
@@ -244,7 +345,7 @@ mod tests {
 
   #[gpui::test]
   fn test_document_undo(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
 
     doc.update(cx, |doc, _cx| {
       doc.set_group_interval(std::time::Duration::from_millis(0));
@@ -271,7 +372,7 @@ mod tests {
 
   #[gpui::test]
   fn test_document_redo(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
 
     doc.update(cx, |doc, _cx| {
       doc.set_group_interval(std::time::Duration::from_millis(0));
@@ -297,7 +398,7 @@ mod tests {
 
   #[gpui::test]
   fn test_document_can_undo_redo(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
 
     doc.update(cx, |doc, _cx| {
       doc.set_group_interval(std::time::Duration::from_millis(0));

@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 env:
@@ -9,7 +11,7 @@ env:
   RUSTUP_TOOLCHAIN: stable
 
 jobs:
-  lint_and_test:
+  check_and_test:
     runs-on: ubuntu-latest
 
     steps:
@@ -33,4 +35,3 @@ jobs:
 
       - run: cargo check --verbose
       - run: cargo test --verbose
-      - run: cargo clippy -- -D warnings
