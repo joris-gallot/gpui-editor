@@ -266,7 +266,7 @@ impl Element for EditorElement {
     let line_height = window.line_height();
 
     // Get theme for syntax highlighting colors
-    let theme = Theme::dark(); // TODO: Get from app settings
+    let theme = self.editor.read(cx).theme.clone();
 
     let mut newly_shaped = Vec::new();
     for (line_idx, line_content) in lines_to_shape {

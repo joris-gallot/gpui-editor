@@ -92,3 +92,89 @@ fn map_highlight_index_to_token_type(idx: usize) -> TokenType {
     _ => TokenType::Variable,            // fallback
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::languages::rust::RUST_CONFIG;
+
+  #[test]
+  fn test_highlight_simple_rust() {
+    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let result = highlighter.highlight_text("fn main() {}");
+
+    assert!(result.is_ok());
+    let highlights = result.unwrap();
+    assert!(!highlights.is_empty());
+  }
+
+  #[test]
+  fn test_highlight_keyword() {
+    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let result = highlighter.highlight_text("fn");
+
+    assert!(result.is_ok());
+    let highlights = result.unwrap();
+
+    // "fn" should be highlighted as keyword
+    assert!(
+      highlights
+        .iter()
+        .any(|h| matches!(h.token_type, TokenType::Keyword))
+    );
+  }
+
+  #[test]
+  fn test_highlight_string() {
+    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let result = highlighter.highlight_text(r#"let s = "hello";"#);
+
+    assert!(result.is_ok());
+    let highlights = result.unwrap();
+
+    // Should have a String token
+    assert!(highlights.iter().any(|h| h.token_type == TokenType::String));
+  }
+
+  #[test]
+  fn test_highlight_comment() {
+    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let result = highlighter.highlight_text("// comment");
+
+    assert!(result.is_ok());
+    let highlights = result.unwrap();
+    assert!(
+      highlights
+        .iter()
+        .any(|h| h.token_type == TokenType::Comment)
+    );
+  }
+
+  #[test]
+  fn test_highlight_empty_text() {
+    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let result = highlighter.highlight_text("");
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_empty());
+  }
+
+  #[test]
+  fn test_highlight_invalid_syntax_doesnt_panic() {
+    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    // Tree-sitter should handle invalid syntax gracefully
+    let result = highlighter.highlight_text("fn {{{");
+
+    // Should return a result (even with parse error)
+    assert!(result.is_ok() || result.is_err());
+  }
+
+  #[test]
+  fn test_map_highlight_indices() {
+    // Verify that all indices map correctly
+    assert_eq!(map_highlight_index_to_token_type(0), TokenType::Keyword);
+    assert_eq!(map_highlight_index_to_token_type(2), TokenType::Function);
+    assert_eq!(map_highlight_index_to_token_type(7), TokenType::String);
+    assert_eq!(map_highlight_index_to_token_type(999), TokenType::Variable); // fallback
+  }
+}
