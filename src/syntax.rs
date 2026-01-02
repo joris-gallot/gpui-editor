@@ -1,8 +1,5 @@
 use crate::theme::TokenType;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
 /// Highlight span with token type
@@ -23,9 +20,6 @@ pub struct LanguageConfig {
 pub struct SyntaxHighlighter {
   highlighter: Highlighter,
   pub config: &'static LanguageConfig,
-
-  // Highlight cache (thread-safe)
-  highlight_cache: Arc<RwLock<HashMap<usize, Vec<HighlightSpan>>>>,
 }
 
 impl SyntaxHighlighter {
@@ -33,7 +27,6 @@ impl SyntaxHighlighter {
     Self {
       highlighter: Highlighter::new(),
       config,
-      highlight_cache: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
@@ -70,23 +63,6 @@ impl SyntaxHighlighter {
     }
 
     Ok(highlights)
-  }
-
-  /// Get highlights for a line from cache
-  pub fn get_cached_line_highlights(&self, line_idx: usize) -> Option<Vec<HighlightSpan>> {
-    self.highlight_cache.read().get(&line_idx).cloned()
-  }
-
-  /// Update cache for a range of lines
-  pub fn update_cache(&self, _highlights: Vec<HighlightSpan>, _text: &str) {
-    // TODO: Split highlights by line and cache
-    // For V1, we can cache all highlights globally
-    // and filter by line on demand
-  }
-
-  /// Invalidate cache from a line onwards
-  pub fn invalidate_cache_from(&self, line_idx: usize) {
-    self.highlight_cache.write().retain(|&k, _| k < line_idx);
   }
 }
 
