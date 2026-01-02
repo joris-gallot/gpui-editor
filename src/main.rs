@@ -99,7 +99,7 @@ fn main() {
         },
         |_, cx| {
           cx.new(|cx| EditorExample {
-            editor: cx.new(|cx| Editor::with_path(Some(Path::new("sample.rs")), cx)),
+            editor: cx.new(|cx| Editor::with_path(Some(Path::new("sample.ts")), cx)),
             focus_handle: cx.focus_handle(),
           })
         },

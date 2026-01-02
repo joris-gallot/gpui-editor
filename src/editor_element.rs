@@ -2,7 +2,7 @@ use gpui::{
   App, Bounds, DispatchPhase, ElementId, ElementInputHandler, Entity, GlobalElementId,
   InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
   PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
-  blue, fill, point, prelude::*, px, relative, rgba, size,
+  fill, point, prelude::*, px, relative, size,
 };
 use std::{ops::Range, rc::Rc, sync::Arc};
 
@@ -183,7 +183,7 @@ impl Element for EditorElement {
     let font_size = style.font_size.to_pixels(window.rem_size());
     let line_height = window.line_height();
 
-    let theme = SyntaxTheme::default();
+    let theme = self.editor.read(cx).theme().syntax();
 
     let mut lines_with_highlights = Vec::new();
     for (line_idx, line_content) in lines_to_shape {
@@ -249,7 +249,7 @@ impl Element for EditorElement {
             point(bounds.left() + cursor_x, y),
             size(px(2.), line_height),
           ),
-          blue(),
+          self.editor.read(cx).theme().cursor(),
         ))
       } else {
         None
@@ -297,7 +297,7 @@ impl Element for EditorElement {
               point(bounds.left() + x_start, y),
               point(bounds.left() + visual_x_end, y + line_height),
             ),
-            rgba(0x3311ff30),
+            self.editor.read(cx).theme().selection(),
           ));
         }
       }

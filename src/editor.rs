@@ -10,11 +10,12 @@ use crate::{
   buffer::TransactionId,
   document::Document,
   editor_element::{EditorElement, PositionMap},
+  theme::Theme,
 };
 use gpui::{
   App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
   Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-  UTF16Selection, Window, actions, div, green, prelude::*, px, red, white,
+  UTF16Selection, Window, actions, black, div, prelude::*, px, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -81,6 +82,8 @@ pub struct Editor {
   pub marked_range: Option<Range<usize>>,
   pub is_selecting: bool,
 
+  pub is_dark_mode: bool,
+
   // Performance: cache and viewport
   pub line_layouts: HashMap<usize, Arc<ShapedLine>>,
   pub scroll_offset: f32, // In lines (0.0 = top)
@@ -96,17 +99,9 @@ pub struct Editor {
   redo_stack: VecDeque<Transaction>,
 }
 
-impl Editor {
-  #[cfg(test)]
-  pub fn new(cx: &mut Context<Self>) -> Self {
-    Self::with_path(None, cx)
-  }
-
-  pub fn with_path(path: Option<&Path>, cx: &mut Context<Self>) -> Self {
-    let start_time = Instant::now();
-
-    // Create a test document with 100K+ lines of Rust code to test syntax highlighting performance
-    let base_content = r#"// Rust example with syntax highlighting
+#[cfg(test)]
+fn generate_rust_test_content_100k() -> String {
+  let base_content = r#"// Rust example with syntax highlighting
 fn main() {
     let x = 42;
     let name = "World";
@@ -163,16 +158,105 @@ trait Drawable {
 }
 "#;
 
-    // Repeat content to reach 100K+ lines
-    let mut content = String::new();
-    let base_line_count = base_content.lines().count();
-    let repetitions = (100_000 / base_line_count) + 1;
+  // Repeat content to reach 100K+ lines
+  let mut content = String::new();
+  let base_line_count = base_content.lines().count();
+  let repetitions = (100_000 / base_line_count) + 1;
 
-    for i in 0..repetitions {
-      content.push_str(&format!("// ===== Repetition {} =====\n", i + 1));
-      content.push_str(base_content);
-      content.push('\n');
+  for i in 0..repetitions {
+    content.push_str(&format!("// ===== Repetition {} =====\n", i + 1));
+    content.push_str(base_content);
+    content.push('\n');
+  }
+
+  content
+}
+
+fn generate_typescript_test_content_100k() -> String {
+  let base_content = r#"// TypeScript example with syntax highlighting
+function main(): void {
+    const x: number = 42;
+    const name: string = "World";
+    console.log(`Hello, ${name}! The answer is ${x}`);
+
+    // Test various token types
+    let counter: number = 0;
+    for (let i = 0; i < 10; i++) {
+        counter += i;
     }
+
+    if (counter > 20) {
+        console.log(`Counter is greater than 20: ${counter}`);
+    }
+}
+
+interface Person {
+    name: string;
+    age: number;
+}
+
+class PersonImpl implements Person {
+    name: string;
+    age: number;
+
+    constructor(name: string, age: number) {
+        this.name = name;
+        this.age = age;
+    }
+
+    greet(): void {
+        console.log(`Hi, I'm ${this.name} and I'm ${this.age} years old`);
+    }
+}
+
+// Test with more lines for scrolling
+function fibonacci(n: number): number {
+    if (n === 0) return 0;
+    if (n === 1) return 1;
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+enum Color {
+    Red = "RED",
+    Green = "GREEN",
+    Blue = "BLUE",
+}
+
+type RGB = {
+    r: number;
+    g: number;
+    b: number;
+};
+
+abstract class Drawable {
+    abstract draw(): void;
+}
+"#;
+
+  // Repeat content to reach 100K+ lines
+  let mut content = String::new();
+  let base_line_count = base_content.lines().count();
+  let repetitions = (100_000 / base_line_count) + 1;
+
+  for i in 0..repetitions {
+    content.push_str(&format!("// ===== Repetition {} =====\n", i + 1));
+    content.push_str(base_content);
+    content.push('\n');
+  }
+
+  content
+}
+
+impl Editor {
+  #[cfg(test)]
+  pub fn new(cx: &mut Context<Self>) -> Self {
+    Self::with_path(None, cx)
+  }
+
+  pub fn with_path(path: Option<&Path>, cx: &mut Context<Self>) -> Self {
+    let start_time = Instant::now();
+
+    let content = generate_typescript_test_content_100k();
 
     let document = cx.new(|cx| Document::with_text_and_path(&content, path, cx));
 
@@ -189,6 +273,7 @@ trait Drawable {
       selection_reversed: false,
       marked_range: None,
       is_selecting: false,
+      is_dark_mode: false,
       line_layouts: HashMap::new(),
       scroll_offset: 0.0,
       viewport_height: px(DEFAULT_VIEWPORT_HEIGHT), // Will be updated from actual bounds
@@ -201,6 +286,26 @@ trait Drawable {
 
   pub fn document(&self) -> &Entity<Document> {
     &self.document
+  }
+
+  pub fn theme(&self) -> Theme {
+    Theme::new(self.is_dark_mode)
+  }
+
+  #[cfg(test)]
+  pub fn set_dark_mode(&mut self, is_dark: bool, cx: &mut Context<Self>) {
+    self.is_dark_mode = is_dark;
+    // Invalidate all cached lines to force re-render with new colors
+    self.line_layouts.clear();
+    cx.notify();
+  }
+
+  #[cfg(test)]
+  pub fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+    self.is_dark_mode = !self.is_dark_mode;
+    // Invalidate all cached lines to force re-render with new colors
+    self.line_layouts.clear();
+    cx.notify();
   }
 
   /// Invalidate a single line in the cache
@@ -1078,7 +1183,7 @@ impl EntityInputHandler for Editor {
 }
 
 impl Render for Editor {
-  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     div()
       .key_context("Editor")
       .track_focus(&self.focus_handle(cx))
@@ -1118,12 +1223,8 @@ impl Render for Editor {
       .on_action(cx.listener(Self::copy))
       .on_action(cx.listener(Self::undo))
       .on_action(cx.listener(Self::redo))
-      .when_else(
-        self.focus_handle(cx).is_focused(window),
-        |d| d.border(px(2.)).border_color(green()),
-        |d| d.border(px(2.)).border_color(red()),
-      )
-      .bg(white())
+      .when_else(self.is_dark_mode, |el| el.bg(black()), |el| el.bg(white()))
+      .px(px(4.0))
       .child(EditorElement::new(cx.entity().clone()))
   }
 }
@@ -1154,6 +1255,7 @@ mod tests {
           document: doc,
           focus_handle: cx.focus_handle(),
           selected_range: 0..0,
+          is_dark_mode: true,
           selection_reversed: false,
           marked_range: None,
           is_selecting: false,
@@ -2016,5 +2118,86 @@ mod tests {
     });
 
     assert_eq!(ctx.selection(), 3..10);
+  }
+
+  #[gpui::test]
+  fn test_theme_toggle(cx: &mut TestAppContext) {
+    let doc = cx.new(Document::new);
+    let editor = cx.new(|cx| Editor {
+      document: doc,
+      focus_handle: cx.focus_handle(),
+      selected_range: 0..0,
+      selection_reversed: false,
+      marked_range: None,
+      is_selecting: false,
+      is_dark_mode: true,
+      line_layouts: HashMap::new(),
+      scroll_offset: 0.0,
+      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
+      max_cache_size: MAX_CACHE_SIZE,
+      target_column: None,
+      undo_stack: VecDeque::new(),
+      redo_stack: VecDeque::new(),
+    });
+
+    // Default is dark
+    editor.read_with(cx, |editor, _| {
+      assert!(editor.is_dark_mode);
+    });
+
+    // Toggle to light
+    editor.update(cx, |editor, cx| {
+      editor.toggle_theme(cx);
+    });
+
+    editor.read_with(cx, |editor, _| {
+      assert!(!editor.is_dark_mode);
+    });
+
+    // Toggle back to dark
+    editor.update(cx, |editor, cx| {
+      editor.toggle_theme(cx);
+    });
+
+    editor.read_with(cx, |editor, _| {
+      assert!(editor.is_dark_mode);
+    });
+  }
+
+  #[gpui::test]
+  fn test_theme_set_mode(cx: &mut TestAppContext) {
+    let doc = cx.new(Document::new);
+    let editor = cx.new(|cx| Editor {
+      document: doc,
+      focus_handle: cx.focus_handle(),
+      selected_range: 0..0,
+      selection_reversed: false,
+      marked_range: None,
+      is_selecting: false,
+      is_dark_mode: true,
+      line_layouts: HashMap::new(),
+      scroll_offset: 0.0,
+      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
+      max_cache_size: MAX_CACHE_SIZE,
+      target_column: None,
+      undo_stack: VecDeque::new(),
+      redo_stack: VecDeque::new(),
+    });
+
+    editor.update(cx, |editor, cx| {
+      editor.set_dark_mode(false, cx);
+    });
+
+    editor.read_with(cx, |editor, _| {
+      assert!(!editor.is_dark_mode);
+    });
+
+    editor.update(cx, |editor, cx| {
+      editor.set_dark_mode(true, cx);
+    });
+
+    editor.read_with(cx, |editor, _| {
+      assert!(editor.is_dark_mode);
+    });
   }
 }

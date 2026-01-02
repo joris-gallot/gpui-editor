@@ -1,5 +1,71 @@
 use gpui::Hsla;
 
+#[derive(Debug, Clone)]
+pub struct Theme {
+  pub is_dark_mode: bool,
+}
+
+impl Theme {
+  pub fn new(is_dark_mode: bool) -> Self {
+    Self { is_dark_mode }
+  }
+
+  pub fn dark() -> Self {
+    Self::new(true)
+  }
+
+  #[cfg(test)]
+  pub fn light() -> Self {
+    Self::new(false)
+  }
+
+  #[cfg(test)]
+  pub fn toggle(&mut self) {
+    self.is_dark_mode = !self.is_dark_mode;
+  }
+
+  pub fn syntax(&self) -> SyntaxTheme {
+    if self.is_dark_mode {
+      SyntaxTheme::default_dark()
+    } else {
+      SyntaxTheme::default_light()
+    }
+  }
+
+  pub fn cursor(&self) -> Hsla {
+    Hsla {
+      h: 210.0 / 360.0,
+      s: 1.0,
+      l: 0.5,
+      a: 0.7,
+    }
+  }
+
+  pub fn selection(&self) -> Hsla {
+    if self.is_dark_mode {
+      Hsla {
+        h: 210.0 / 360.0,
+        s: 1.0,
+        l: 0.55,
+        a: 0.3,
+      }
+    } else {
+      Hsla {
+        h: 210.0 / 360.0,
+        s: 1.0,
+        l: 0.85,
+        a: 0.4,
+      }
+    }
+  }
+}
+
+impl Default for Theme {
+  fn default() -> Self {
+    Self::dark()
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenType {
   Keyword,
@@ -34,6 +100,7 @@ pub enum TokenType {
   Embedded,
 }
 
+/// Syntax highlighting theme
 #[derive(Debug, Clone)]
 pub struct SyntaxTheme {
   pub keyword: Hsla,
@@ -105,8 +172,9 @@ impl SyntaxTheme {
   }
 }
 
-impl Default for SyntaxTheme {
-  fn default() -> Self {
+impl SyntaxTheme {
+  /// Default dark theme inspired by VS Code Dark+
+  pub fn default_dark() -> Self {
     Self {
       // Keywords - blue
       keyword: Hsla {
@@ -317,6 +385,225 @@ impl Default for SyntaxTheme {
       }, // #9cdcfe
     }
   }
+
+  /// Default light theme
+  pub fn default_light() -> Self {
+    Self {
+      // Keywords - darker blue
+      keyword: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.79,
+        l: 0.35,
+        a: 1.0,
+      }, // #0000FF
+      keyword_control: Hsla {
+        h: 291.0 / 360.0,
+        s: 0.67,
+        l: 0.40,
+        a: 1.0,
+      }, // #AF00DB
+
+      // Functions - darker brown/gold
+      function: Hsla {
+        h: 35.0 / 360.0,
+        s: 0.75,
+        l: 0.35,
+        a: 1.0,
+      }, // #795E26
+      function_method: Hsla {
+        h: 35.0 / 360.0,
+        s: 0.75,
+        l: 0.35,
+        a: 1.0,
+      }, // #795E26
+      function_special: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.79,
+        l: 0.35,
+        a: 1.0,
+      }, // #0000FF (macros in blue)
+
+      // Types - teal/cyan
+      type_name: Hsla {
+        h: 180.0 / 360.0,
+        s: 0.69,
+        l: 0.31,
+        a: 1.0,
+      }, // #267F99
+      type_builtin: Hsla {
+        h: 180.0 / 360.0,
+        s: 0.69,
+        l: 0.31,
+        a: 1.0,
+      }, // #267F99
+      type_interface: Hsla {
+        h: 180.0 / 360.0,
+        s: 0.69,
+        l: 0.31,
+        a: 1.0,
+      }, // #267F99
+      type_class: Hsla {
+        h: 180.0 / 360.0,
+        s: 0.69,
+        l: 0.31,
+        a: 1.0,
+      }, // #267F99
+
+      // Strings - dark orange/red
+      string: Hsla {
+        h: 5.0 / 360.0,
+        s: 0.73,
+        l: 0.38,
+        a: 1.0,
+      }, // #A31515
+      string_escape: Hsla {
+        h: 30.0 / 360.0,
+        s: 0.65,
+        l: 0.45,
+        a: 1.0,
+      }, // #EE9900
+      string_regex: Hsla {
+        h: 341.0 / 360.0,
+        s: 0.69,
+        l: 0.48,
+        a: 1.0,
+      }, // #D16969
+
+      // Numbers - dark green
+      number: Hsla {
+        h: 120.0 / 360.0,
+        s: 0.53,
+        l: 0.31,
+        a: 1.0,
+      }, // #098658
+      boolean: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.79,
+        l: 0.35,
+        a: 1.0,
+      }, // #0000FF
+
+      // Comments - green
+      comment: Hsla {
+        h: 120.0 / 360.0,
+        s: 0.43,
+        l: 0.35,
+        a: 1.0,
+      }, // #008000
+      comment_doc: Hsla {
+        h: 120.0 / 360.0,
+        s: 0.43,
+        l: 0.40,
+        a: 1.0,
+      }, // #008000 (slightly brighter)
+
+      // Operators - dark gray
+      operator: Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 0.20,
+        a: 1.0,
+      }, // #333333
+
+      // Variables - dark blue/black
+      variable: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.76,
+        l: 0.26,
+        a: 1.0,
+      }, // #001080
+      variable_special: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.79,
+        l: 0.35,
+        a: 1.0,
+      }, // #0000FF (this, self)
+      variable_parameter: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.76,
+        l: 0.26,
+        a: 1.0,
+      }, // #001080
+
+      // Properties
+      property: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.76,
+        l: 0.26,
+        a: 1.0,
+      }, // #001080
+
+      // Constants
+      constant: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.76,
+        l: 0.26,
+        a: 1.0,
+      }, // #001080
+      constant_builtin: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.79,
+        l: 0.35,
+        a: 1.0,
+      }, // #0000FF (true, false, null, etc.)
+
+      // Punctuation - dark gray
+      punctuation: Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 0.20,
+        a: 1.0,
+      }, // #333333
+      punctuation_bracket: Hsla {
+        h: 35.0 / 360.0,
+        s: 0.75,
+        l: 0.35,
+        a: 1.0,
+      }, // #795E26 (brackets in brown/gold)
+      punctuation_delimiter: Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 0.20,
+        a: 1.0,
+      }, // #333333
+      punctuation_special: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.79,
+        l: 0.35,
+        a: 1.0,
+      }, // #0000FF
+
+      // Attributes/Decorators - brown/gold
+      attribute: Hsla {
+        h: 35.0 / 360.0,
+        s: 0.75,
+        l: 0.35,
+        a: 1.0,
+      }, // #795E26
+
+      // Lifetime (Rust) - teal
+      lifetime: Hsla {
+        h: 180.0 / 360.0,
+        s: 0.69,
+        l: 0.31,
+        a: 1.0,
+      }, // #267F99
+
+      // Embedded (template strings)
+      embedded: Hsla {
+        h: 210.0 / 360.0,
+        s: 0.76,
+        l: 0.26,
+        a: 1.0,
+      }, // #001080
+    }
+  }
+}
+
+impl Default for SyntaxTheme {
+  fn default() -> Self {
+    Self::default_dark()
+  }
 }
 
 #[cfg(test)]
@@ -325,6 +612,32 @@ mod tests {
 
   #[test]
   fn test_default_theme_exists() {
+    let theme = Theme::default();
+    assert_eq!(theme.syntax().keyword.a, 1.0);
+    assert!(theme.is_dark_mode);
+  }
+
+  #[test]
+  fn test_light_theme() {
+    let theme = Theme::light();
+    assert!(!theme.is_dark_mode);
+    assert_eq!(theme.syntax().keyword.a, 1.0);
+  }
+
+  #[test]
+  fn test_theme_toggle() {
+    let mut theme = Theme::default();
+    assert!(theme.is_dark_mode);
+
+    theme.toggle();
+    assert!(!theme.is_dark_mode);
+
+    theme.toggle();
+    assert!(theme.is_dark_mode);
+  }
+
+  #[test]
+  fn test_syntax_theme_default() {
     let theme = SyntaxTheme::default();
     assert_eq!(theme.keyword.a, 1.0);
   }
