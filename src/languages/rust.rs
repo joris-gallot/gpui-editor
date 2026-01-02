@@ -31,8 +31,8 @@ pub static RUST_CONFIG: Lazy<LanguageConfig> = Lazy::new(|| {
     language,
     "rust",
     query_source,
-    "", // injections query (vide pour l'instant)
-    "", // locals query (vide pour l'instant)
+    "", // injections query
+    "", // locals query
   )
   .expect("Failed to create Rust highlight config");
 
