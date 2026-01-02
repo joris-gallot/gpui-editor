@@ -95,20 +95,88 @@ pub struct Editor {
   redo_stack: VecDeque<Transaction>,
 
   is_dark_mode: bool,
+
+  // Track syntax highlighting version to invalidate cache when highlights change
+  pub last_highlights_version: usize,
+}
+
+fn generate_rust_test_content_100k() -> String {
+  let base_content = r#"// Rust example with syntax highlighting
+fn main() {
+    let x = 42;
+    let name = "World";
+    println!("Hello, {}! The answer is {}", name, x);
+
+    // Test various token types
+    let mut counter = 0;
+    for i in 0..10 {
+        counter += i;
+    }
+
+    if counter > 20 {
+        println!("Counter is greater than 20: {}", counter);
+    }
+}
+
+struct Person {
+    name: String,
+    age: u32,
+}
+
+impl Person {
+    fn new(name: &str, age: u32) -> Self {
+        Self {
+            name: name.to_string(),
+            age,
+        }
+    }
+
+    fn greet(&self) {
+        println!("Hi, I'm {} and I'm {} years old", self.name, self.age);
+    }
+}
+
+// Test with more lines for scrolling
+fn fibonacci(n: u32) -> u32 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fibonacci(n - 1) + fibonacci(n - 2),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Color {
+    Red,
+    Green,
+    Blue,
+    RGB(u8, u8, u8),
+}
+
+trait Drawable {
+    fn draw(&self);
+}
+"#;
+
+  // Repeat content to reach 100K+ lines
+  let mut content = String::new();
+  let base_line_count = base_content.lines().count();
+  let repetitions = (100_000 / base_line_count) + 1;
+
+  for i in 0..repetitions {
+    content.push_str(&format!("// ===== Repetition {} =====\n", i + 1));
+    content.push_str(base_content);
+    content.push('\n');
+  }
+
+  content
 }
 
 impl Editor {
   pub fn new(cx: &mut Context<Self>) -> Self {
-    // Create a test document with 100k lines for performance testing
-    let mut content = String::new();
-    for i in 0..100_000 {
-      content.push_str(&format!(
-        "Line {} - This is some test content to see how the editor performs with many lines\n",
-        i + 1
-      ));
-    }
+    let content = generate_rust_test_content_100k();
 
-    let document = cx.new(|cx| Document::with_text(&content, cx));
+    let document = cx.new(|cx| Document::with_text_and_language(&content, Some("rs"), cx));
 
     Self {
       document,
@@ -125,6 +193,7 @@ impl Editor {
       undo_stack: VecDeque::new(),
       redo_stack: VecDeque::new(),
       is_dark_mode: true,
+      last_highlights_version: 0,
     }
   }
 
@@ -656,7 +725,16 @@ impl Editor {
 
   fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
     if let Some(transaction) = self.undo_stack.pop_back() {
-      let buffer_tx_id = self.document.update(cx, |doc, cx| doc.undo(cx));
+      let buffer_tx_id = self.document.update(cx, |doc, cx| {
+        let result = doc.undo(cx);
+
+        // Trigger async syntax re-highlighting after undo
+        if result.is_some() {
+          doc.schedule_recompute_highlights(cx);
+        }
+
+        result
+      });
 
       // Only restore selection if buffer undo succeeded
       if buffer_tx_id.is_some() {
@@ -680,7 +758,16 @@ impl Editor {
 
   fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
     if let Some(transaction) = self.redo_stack.pop_back() {
-      let buffer_tx_id = self.document.update(cx, |doc, cx| doc.redo(cx));
+      let buffer_tx_id = self.document.update(cx, |doc, cx| {
+        let result = doc.redo(cx);
+
+        // Trigger async syntax re-highlighting after redo
+        if result.is_some() {
+          doc.schedule_recompute_highlights(cx);
+        }
+
+        result
+      });
 
       // Only restore selection if buffer redo succeeded
       if buffer_tx_id.is_some() {
@@ -925,6 +1012,10 @@ impl EntityInputHandler for Editor {
       let id = doc.buffer.transaction(Instant::now(), |buffer, tx| {
         buffer.replace(tx, range.clone(), new_text);
       });
+
+      // Trigger async syntax re-highlighting with debouncing
+      doc.schedule_recompute_highlights(cx);
+
       cx.notify();
       id
     });
@@ -1095,6 +1186,7 @@ mod tests {
           undo_stack: VecDeque::new(),
           redo_stack: VecDeque::new(),
           is_dark_mode: false,
+          last_highlights_version: 0,
         }
       });
 
@@ -1120,6 +1212,7 @@ mod tests {
           undo_stack: VecDeque::new(),
           redo_stack: VecDeque::new(),
           is_dark_mode: false,
+          last_highlights_version: 0,
         }
       });
 

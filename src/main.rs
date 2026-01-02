@@ -1,12 +1,15 @@
 use gpui::{
-  App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Window,
-  WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+  div, prelude::*, px, rgb, size, App, Application, Bounds, Context, Entity, FocusHandle,
+  Focusable, KeyBinding, Window, WindowBounds, WindowOptions,
 };
 
 mod buffer;
 mod document;
 mod editor;
 mod editor_element;
+mod languages;
+mod syntax;
+mod theme;
 
 // Initial window size
 const INITIAL_WINDOW_WIDTH: f32 = 1200.0;
