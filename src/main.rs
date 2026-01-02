@@ -7,6 +7,7 @@ mod buffer;
 mod document;
 mod editor;
 mod editor_element;
+mod gutter_element;
 mod languages;
 mod syntax;
 mod theme;

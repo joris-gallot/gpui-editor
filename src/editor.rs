@@ -9,12 +9,13 @@ use crate::{
   buffer::TransactionId,
   document::Document,
   editor_element::{EditorElement, PositionMap},
+  gutter_element::GutterElement,
   theme::Theme,
 };
 use gpui::{
   App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
   Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-  UTF16Selection, Window, actions, black, div, prelude::*, px, white,
+  UTF16Selection, Window, actions, black, div, prelude::*, px, rgb, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1150,8 +1151,26 @@ impl Render for Editor {
         |el| el.text_color(white()),
         |el| el.text_color(black()),
       )
-      .px(px(6.0))
-      .child(EditorElement::new(cx.entity().clone()))
+      .flex()
+      .flex_row()
+      .child(
+        div()
+          .w(px(70.0))
+          .h_full()
+          .when_else(
+            self.theme.is_dark,
+            |el| el.bg(rgb(0x1e1e1e)),
+            |el| el.bg(rgb(0xf5f5f5)),
+          )
+          .child(GutterElement::new(cx.entity().clone())),
+      )
+      .child(
+        div()
+          .flex_1()
+          .h_full()
+          .px(px(4.0))
+          .child(EditorElement::new(cx.entity().clone())),
+      )
   }
 }
 
