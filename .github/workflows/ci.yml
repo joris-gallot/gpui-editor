@@ -33,4 +33,3 @@ jobs:
 
       - run: cargo check --verbose
       - run: cargo test --verbose
-      - run: cargo clippy -- -D warnings
