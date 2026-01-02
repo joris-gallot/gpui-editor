@@ -1144,6 +1144,7 @@ impl Render for Editor {
         |el| el.text_color(white()),
         |el| el.text_color(black()),
       )
+      .px(px(6.0))
       .child(EditorElement::new(cx.entity().clone()))
   }
 }
