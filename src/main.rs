@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use gpui::{
   App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Window,
   WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
@@ -7,6 +9,8 @@ mod buffer;
 mod document;
 mod editor;
 mod editor_element;
+mod syntax;
+mod theme;
 
 // Initial window size
 const INITIAL_WINDOW_WIDTH: f32 = 1200.0;
@@ -95,7 +99,7 @@ fn main() {
         },
         |_, cx| {
           cx.new(|cx| EditorExample {
-            editor: cx.new(Editor::new),
+            editor: cx.new(|cx| Editor::with_path(Some(Path::new("sample.rs")), cx)),
             focus_handle: cx.focus_handle(),
           })
         },

@@ -6,6 +6,8 @@ use gpui::{
 };
 use std::{ops::Range, rc::Rc, sync::Arc};
 
+use crate::syntax::Highlight;
+use crate::theme::{SyntaxTheme, TokenType};
 use crate::{document::Document, editor::Editor};
 
 // Visual width for empty line selection indicator
@@ -181,19 +183,38 @@ impl Element for EditorElement {
     let font_size = style.font_size.to_pixels(window.rem_size());
     let line_height = window.line_height();
 
-    let mut newly_shaped = Vec::new();
+    let theme = SyntaxTheme::default();
+
+    let mut lines_with_highlights = Vec::new();
     for (line_idx, line_content) in lines_to_shape {
-      let run = TextRun {
-        len: line_content.len(),
-        font: style.font(),
-        color: style.color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
+      let document_entity = self.editor.read(cx).document().clone();
+      let (highlights, line_start) = document_entity.update(cx, |doc, _| {
+        let highlights = doc.get_highlights_for_line(line_idx);
+        let line_start = doc.line_to_char(line_idx);
+        (highlights, line_start)
+      });
+      lines_with_highlights.push((line_idx, line_content, highlights, line_start));
+    }
+
+    let mut newly_shaped = Vec::new();
+    for (line_idx, line_content, highlights, line_start) in lines_with_highlights {
+      let runs = if highlights.is_empty() {
+        // Fallback: single run with default color
+        vec![TextRun {
+          len: line_content.len(),
+          font: style.font(),
+          color: style.color,
+          background_color: None,
+          underline: None,
+          strikethrough: None,
+        }]
+      } else {
+        create_text_runs_from_highlights(&line_content, &highlights, line_start, &style, &theme)
       };
+
       let shaped = window
         .text_system()
-        .shape_line(line_content.into(), font_size, &[run], None);
+        .shape_line(line_content.into(), font_size, &runs, None);
       newly_shaped.push((line_idx, shaped));
     }
 
@@ -407,6 +428,123 @@ impl Element for EditorElement {
       window.paint_quad(cursor_quad.clone());
     }
   }
+}
+
+/// Create TextRuns from syntax highlights
+fn create_text_runs_from_highlights(
+  line_content: &str,
+  highlights: &[Highlight],
+  line_start: usize,
+  style: &gpui::TextStyle,
+  theme: &SyntaxTheme,
+) -> Vec<TextRun> {
+  if highlights.is_empty() || line_content.is_empty() {
+    return vec![TextRun {
+      len: line_content.len(),
+      font: style.font(),
+      color: style.color,
+      background_color: None,
+      underline: None,
+      strikethrough: None,
+    }];
+  }
+
+  let mut runs = Vec::new();
+  let line_char_count = line_content.chars().count();
+  let line_end = line_start + line_char_count;
+
+  // Filter and sort highlights that overlap with this line
+  let mut sorted_highlights: Vec<_> = highlights
+    .iter()
+    .filter(|h| h.range.start < line_end && h.range.end > line_start)
+    .cloned()
+    .collect();
+  sorted_highlights.sort_by_key(|h| h.range.start);
+
+  // Build a map of char positions to token types
+  let mut char_colors: Vec<Option<TokenType>> = vec![None; line_char_count];
+  for highlight in &sorted_highlights {
+    let start = highlight
+      .range
+      .start
+      .saturating_sub(line_start)
+      .min(line_char_count);
+    let end = highlight
+      .range
+      .end
+      .saturating_sub(line_start)
+      .min(line_char_count);
+
+    for color in char_colors.iter_mut().take(end).skip(start) {
+      *color = Some(highlight.token_type);
+    }
+  }
+
+  let mut current_byte_pos = 0;
+  let mut current_color: Option<TokenType> = None;
+  let mut run_start_byte = 0;
+
+  for (char_idx, ch) in line_content.chars().enumerate() {
+    let char_byte_len = ch.len_utf8();
+    let color = char_colors.get(char_idx).copied().flatten();
+
+    if color != current_color {
+      // Emit the previous run if it exists
+      if current_byte_pos > run_start_byte {
+        let len = current_byte_pos - run_start_byte;
+        let run_color = match current_color {
+          Some(token_type) => theme.color_for_token(token_type),
+          None => style.color,
+        };
+
+        runs.push(TextRun {
+          len,
+          font: style.font(),
+          color: run_color,
+          background_color: None,
+          underline: None,
+          strikethrough: None,
+        });
+      }
+
+      run_start_byte = current_byte_pos;
+      current_color = color;
+    }
+
+    current_byte_pos += char_byte_len;
+  }
+
+  // Emit the final run
+  if current_byte_pos > run_start_byte {
+    let len = current_byte_pos - run_start_byte;
+    let run_color = match current_color {
+      Some(token_type) => theme.color_for_token(token_type),
+      None => style.color,
+    };
+
+    runs.push(TextRun {
+      len,
+      font: style.font(),
+      color: run_color,
+      background_color: None,
+      underline: None,
+      strikethrough: None,
+    });
+  }
+
+  // Fallback if no runs were created
+  if runs.is_empty() {
+    runs.push(TextRun {
+      len: line_content.len(),
+      font: style.font(),
+      color: style.color,
+      background_color: None,
+      underline: None,
+      strikethrough: None,
+    });
+  }
+
+  runs
 }
 
 #[cfg(test)]

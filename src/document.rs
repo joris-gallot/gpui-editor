@@ -1,9 +1,11 @@
 use crate::buffer::TextBuffer;
+use crate::syntax::{Highlight, Language, SyntaxHighlighter};
 use gpui::Context;
-use std::{borrow::Cow, ops::Range, time::Instant};
+use std::{borrow::Cow, ops::Range, path::Path, time::Instant};
 
 pub struct Document {
   pub buffer: TextBuffer,
+  highlighter: Option<SyntaxHighlighter>,
 }
 
 impl Document {
@@ -11,12 +13,42 @@ impl Document {
   pub fn new(_cx: &mut Context<Self>) -> Self {
     Self {
       buffer: TextBuffer::new(),
+      highlighter: None,
     }
   }
 
+  #[cfg(test)]
   pub fn with_text(text: &str, _cx: &mut Context<Self>) -> Self {
+    Self::with_text_and_path(text, None, _cx)
+  }
+
+  pub fn with_text_and_path(text: &str, path: Option<&Path>, _cx: &mut Context<Self>) -> Self {
+    let language = path
+      .and_then(|p| p.extension())
+      .and_then(|ext| ext.to_str())
+      .map(Language::from_extension)
+      .unwrap_or(Language::PlainText);
+
+    let mut highlighter = SyntaxHighlighter::new(language);
+    if let Some(ref mut h) = highlighter {
+      h.parse(text);
+    }
+
     Self {
       buffer: TextBuffer::from_text(text),
+      highlighter,
+    }
+  }
+
+  pub fn get_highlights_for_line(&mut self, line_idx: usize) -> Vec<Highlight> {
+    let line_range = match self.line_range(line_idx) {
+      Some(r) => r,
+      None => return Vec::new(),
+    };
+
+    match &mut self.highlighter {
+      Some(h) => h.highlights_for_range(line_range),
+      None => Vec::new(),
     }
   }
 
@@ -66,14 +98,43 @@ impl Document {
 
   pub fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
     self.buffer.transaction(Instant::now(), |buffer, tx| {
-      buffer.replace(tx, range, text);
+      buffer.replace(tx, range.clone(), text);
     });
+
+    if self.highlighter.is_some() {
+      let new_text = self.buffer.chars().collect::<String>();
+      let start_byte = self.char_offset_to_byte(range.start);
+      let old_end_byte = self.char_offset_to_byte(range.end);
+      let new_end_byte = start_byte + text.len();
+
+      let edit = crate::syntax::TextEdit {
+        start_byte,
+        old_end_byte,
+        new_end_byte,
+      };
+
+      self.highlighter.as_mut().unwrap().update(edit, &new_text);
+    }
+
     cx.notify();
+  }
+
+  fn char_offset_to_byte(&self, char_offset: usize) -> usize {
+    self
+      .buffer
+      .chars()
+      .take(char_offset)
+      .map(|c| c.len_utf8())
+      .sum()
   }
 
   pub fn undo(&mut self, cx: &mut Context<Self>) -> Option<crate::buffer::TransactionId> {
     let result = self.buffer.undo();
     if result.is_some() {
+      if let Some(ref mut highlighter) = self.highlighter {
+        let text = self.buffer.chars().collect::<String>();
+        highlighter.parse(&text);
+      }
       cx.notify();
     }
     result
@@ -82,6 +143,10 @@ impl Document {
   pub fn redo(&mut self, cx: &mut Context<Self>) -> Option<crate::buffer::TransactionId> {
     let result = self.buffer.redo();
     if result.is_some() {
+      if let Some(ref mut highlighter) = self.highlighter {
+        let text = self.buffer.chars().collect::<String>();
+        highlighter.parse(&text);
+      }
       cx.notify();
     }
     result

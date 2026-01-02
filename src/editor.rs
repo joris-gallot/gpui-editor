@@ -1,6 +1,7 @@
 use std::{
   collections::{HashMap, VecDeque},
   ops::Range,
+  path::Path,
   sync::Arc,
   time::Instant,
 };
@@ -27,7 +28,7 @@ struct Transaction {
 // Default viewport height before first render
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 800.0;
 // Maximum number of cached shaped lines
-const MAX_CACHE_SIZE: usize = 200;
+const MAX_CACHE_SIZE: usize = 1000;
 // Number of lines of padding when auto-scrolling to cursor
 const SCROLL_PADDING: usize = 3;
 
@@ -96,17 +97,90 @@ pub struct Editor {
 }
 
 impl Editor {
+  #[cfg(test)]
   pub fn new(cx: &mut Context<Self>) -> Self {
-    // Create a test document with 100k lines for performance testing
-    let mut content = String::new();
-    for i in 0..100_000 {
-      content.push_str(&format!(
-        "Line {} - This is some test content to see how the editor performs with many lines\n",
-        i + 1
-      ));
+    Self::with_path(None, cx)
+  }
+
+  pub fn with_path(path: Option<&Path>, cx: &mut Context<Self>) -> Self {
+    let start_time = Instant::now();
+
+    // Create a test document with 100K+ lines of Rust code to test syntax highlighting performance
+    let base_content = r#"// Rust example with syntax highlighting
+fn main() {
+    let x = 42;
+    let name = "World";
+    println!("Hello, {}! The answer is {}", name, x);
+
+    // Test various token types
+    let mut counter = 0;
+    for i in 0..10 {
+        counter += i;
     }
 
-    let document = cx.new(|cx| Document::with_text(&content, cx));
+    if counter > 20 {
+        println!("Counter is greater than 20: {}", counter);
+    }
+}
+
+struct Person {
+    name: String,
+    age: u32,
+}
+
+impl Person {
+    fn new(name: &str, age: u32) -> Self {
+        Self {
+            name: name.to_string(),
+            age,
+        }
+    }
+
+    fn greet(&self) {
+        println!("Hi, I'm {} and I'm {} years old", self.name, self.age);
+    }
+}
+
+// Test with more lines for scrolling
+fn fibonacci(n: u32) -> u32 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fibonacci(n - 1) + fibonacci(n - 2),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Color {
+    Red,
+    Green,
+    Blue,
+    RGB(u8, u8, u8),
+}
+
+trait Drawable {
+    fn draw(&self);
+}
+"#;
+
+    // Repeat content to reach 100K+ lines
+    let mut content = String::new();
+    let base_line_count = base_content.lines().count();
+    let repetitions = (100_000 / base_line_count) + 1;
+
+    for i in 0..repetitions {
+      content.push_str(&format!("// ===== Repetition {} =====\n", i + 1));
+      content.push_str(base_content);
+      content.push('\n');
+    }
+
+    let document = cx.new(|cx| Document::with_text_and_path(&content, path, cx));
+
+    eprintln!(
+      "✅ Editor initialized in {:.2}ms (document has {} lines)",
+      start_time.elapsed().as_secs_f64() * 1000.0,
+      content.lines().count()
+    );
 
     Self {
       document,
@@ -1072,31 +1146,6 @@ mod tests {
   }
 
   impl EditorTestContext {
-    /// Create a new test context with empty document
-    #[allow(dead_code)]
-    fn new(mut cx: TestAppContext) -> Self {
-      let editor = cx.new(|cx| {
-        let doc = cx.new(Document::new);
-        Editor {
-          document: doc,
-          focus_handle: cx.focus_handle(),
-          selected_range: 0..0,
-          selection_reversed: false,
-          marked_range: None,
-          is_selecting: false,
-          line_layouts: HashMap::new(),
-          scroll_offset: 0.0,
-          viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
-          max_cache_size: MAX_CACHE_SIZE,
-          target_column: None,
-          undo_stack: VecDeque::new(),
-          redo_stack: VecDeque::new(),
-        }
-      });
-
-      Self { cx, editor }
-    }
-
     /// Create a test context with specific text content
     fn with_text(mut cx: TestAppContext, text: &str) -> Self {
       let editor = cx.new(|cx| {
@@ -1156,7 +1205,6 @@ mod tests {
     }
 
     /// Get whether selection is reversed
-    #[allow(dead_code)]
     fn selection_reversed(&self) -> bool {
       self
         .editor
@@ -1257,31 +1305,31 @@ mod tests {
 
   #[gpui::test]
   fn test_ensure_cache_size_limit(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_lines(cx.clone(), 300);
+    let mut ctx = EditorTestContext::with_lines(cx.clone(), 2000);
 
-    // Fill cache beyond MAX_CACHE_SIZE
+    // Fill cache beyond MAX_CACHE_SIZE (1000)
     ctx.editor.update(&mut ctx.cx, |editor, _| {
-      for i in 0..250 {
+      for i in 0..1500 {
         editor
           .line_layouts
           .insert(i, Arc::new(ShapedLine::default()));
       }
     });
 
-    assert_eq!(ctx.cache_size(), 250);
+    assert_eq!(ctx.cache_size(), 1500);
 
-    // Call ensure_cache_size with viewport at lines 100-120
+    // Call ensure_cache_size with viewport at lines 500-520
     ctx.editor.update(&mut ctx.cx, |editor, _| {
-      editor.ensure_cache_size(100..120);
+      editor.ensure_cache_size(500..520);
     });
 
-    // Cache should be reduced
-    assert!(ctx.cache_size() < 250);
+    // Cache should be reduced below MAX_CACHE_SIZE
+    assert!(ctx.cache_size() <= 1000);
 
-    // Lines near viewport should be kept (50..170 range)
+    // Lines near viewport should be kept
     ctx.editor.read_with(&ctx.cx, |editor, _| {
-      assert!(editor.line_layouts.contains_key(&100));
-      assert!(editor.line_layouts.contains_key(&110));
+      assert!(editor.line_layouts.contains_key(&500));
+      assert!(editor.line_layouts.contains_key(&510));
     });
   }
 
