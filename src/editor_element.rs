@@ -425,7 +425,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_simple(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     // 400px height, 20px line height = 20 visible lines
@@ -441,7 +441,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_with_scroll(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -456,7 +456,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_at_end(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -472,7 +472,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_short_document(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -487,7 +487,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_fractional_scroll(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -503,7 +503,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_scroll_past_end(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -519,7 +519,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_minimum_one_line(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 10.0); // Very small height
@@ -535,7 +535,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_large_line_height(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -551,7 +551,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_single_line_document(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);
@@ -566,7 +566,7 @@ mod tests {
 
   #[gpui::test]
   fn test_calculate_viewport_empty_document(cx: &mut TestAppContext) {
-    let editor = cx.new(|cx| crate::editor::Editor::new(cx));
+    let editor = cx.new(crate::editor::Editor::new);
     let element = EditorElement::new(editor);
 
     let bounds = test_bounds(800.0, 400.0);

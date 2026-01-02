@@ -14,9 +14,9 @@ const INITIAL_WINDOW_HEIGHT: f32 = 800.0;
 
 use editor::{
   AltLeft, AltRight, Backspace, BackspaceAll, BackspaceWord, CmdDown, CmdLeft, CmdRight, CmdUp,
-  Copy, Cut, Delete, Down, Editor, End, Enter, Home, Left, Paste, Quit, Right, SelectAll,
+  Copy, Cut, Delete, Down, Editor, End, Enter, Home, Left, Paste, Quit, Redo, Right, SelectAll,
   SelectCmdDown, SelectCmdLeft, SelectCmdRight, SelectCmdUp, SelectDown, SelectLeft, SelectRight,
-  SelectUp, SelectWordLeft, SelectWordRight, ShowCharacterPalette, Up,
+  SelectUp, SelectWordLeft, SelectWordRight, ShowCharacterPalette, Undo, Up,
 };
 
 struct EditorExample {
@@ -80,6 +80,8 @@ fn main() {
       KeyBinding::new("cmd-v", Paste, None),
       KeyBinding::new("cmd-c", Copy, None),
       KeyBinding::new("cmd-x", Cut, None),
+      KeyBinding::new("cmd-z", Undo, None),
+      KeyBinding::new("cmd-shift-z", Redo, None),
       KeyBinding::new("home", Home, None),
       KeyBinding::new("end", End, None),
       KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),

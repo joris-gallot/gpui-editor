@@ -1,6 +1,12 @@
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::{
+  collections::{HashMap, VecDeque},
+  ops::Range,
+  sync::Arc,
+  time::Instant,
+};
 
 use crate::{
+  buffer::TransactionId,
   document::Document,
   editor_element::{EditorElement, PositionMap},
 };
@@ -10,6 +16,13 @@ use gpui::{
   UTF16Selection, Window, actions, div, green, prelude::*, px, red, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+#[derive(Clone, Debug)]
+struct Transaction {
+  id: TransactionId,
+  selection_before: Range<usize>,
+  selection_after: Range<usize>,
+}
 
 // Default viewport height before first render
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 800.0;
@@ -53,6 +66,8 @@ actions!(
     Paste,
     Cut,
     Copy,
+    Undo,
+    Redo,
     Quit,
   ]
 );
@@ -75,6 +90,9 @@ pub struct Editor {
 
   // Target column for vertical navigation
   target_column: Option<usize>,
+
+  undo_stack: VecDeque<Transaction>,
+  redo_stack: VecDeque<Transaction>,
 }
 
 impl Editor {
@@ -102,6 +120,8 @@ impl Editor {
       viewport_height: px(DEFAULT_VIEWPORT_HEIGHT), // Will be updated from actual bounds
       max_cache_size: MAX_CACHE_SIZE,
       target_column: None,
+      undo_stack: VecDeque::new(),
+      redo_stack: VecDeque::new(),
     }
   }
 
@@ -169,18 +189,24 @@ impl Editor {
     self.target_column = None;
     let cursor = self.cursor_offset();
     let current_line = self.document.read(cx).char_to_line(cursor);
+    let selection_before = self.selected_range.clone();
 
-    self.document.update(cx, |doc, cx| {
-      doc.insert_char(cursor, '\n', cx);
+    let transaction_id = self.document.update(cx, |doc, cx| {
+      let id = doc.buffer.transaction(Instant::now(), |buffer, tx| {
+        buffer.insert(tx, cursor, "\n");
+      });
+      cx.notify();
+      id
     });
 
     self.move_to(cursor + 1, cx);
+    let selection_after = self.selected_range.clone();
 
-    // Multi-line edit: invalidate from current line
+    self.record_transaction(transaction_id, selection_before, selection_after);
+
     self.invalidate_lines_from(current_line);
 
     self.ensure_cursor_visible(window, cx);
-    cx.notify();
   }
 
   fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
@@ -625,6 +651,74 @@ impl Editor {
     }
   }
 
+  fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+    if let Some(transaction) = self.undo_stack.pop_back() {
+      let buffer_tx_id = self.document.update(cx, |doc, cx| doc.undo(cx));
+
+      // Only restore selection if buffer undo succeeded
+      if buffer_tx_id.is_some() {
+        // Restore cursor position from before the transaction
+        self.selected_range = transaction.selection_before.clone();
+        self.selection_reversed = false;
+
+        // Invalidate cache (content may have changed significantly)
+        self.line_layouts.clear();
+
+        // Move transaction to redo stack
+        self.redo_stack.push_back(transaction);
+
+        cx.notify();
+      } else {
+        // Buffer undo failed, push transaction back
+        self.undo_stack.push_back(transaction);
+      }
+    }
+  }
+
+  fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+    if let Some(transaction) = self.redo_stack.pop_back() {
+      let buffer_tx_id = self.document.update(cx, |doc, cx| doc.redo(cx));
+
+      // Only restore selection if buffer redo succeeded
+      if buffer_tx_id.is_some() {
+        // Restore cursor position from after the transaction
+        self.selected_range = transaction.selection_after.clone();
+        self.selection_reversed = false;
+
+        // Invalidate cache
+        self.line_layouts.clear();
+
+        // Move transaction to undo stack
+        self.undo_stack.push_back(transaction);
+
+        cx.notify();
+      } else {
+        // Buffer redo failed, push transaction back
+        self.redo_stack.push_back(transaction);
+      }
+    }
+  }
+
+  fn record_transaction(
+    &mut self,
+    id: TransactionId,
+    selection_before: Range<usize>,
+    selection_after: Range<usize>,
+  ) {
+    // Check if we should update an existing transaction with the same ID (grouping)
+    if let Some(transaction) = self.undo_stack.iter_mut().find(|t| t.id == id) {
+      transaction.selection_after = selection_after;
+    } else {
+      // Create new transaction
+      self.undo_stack.push_back(Transaction {
+        id,
+        selection_before,
+        selection_after,
+      });
+      self.redo_stack.clear();
+    }
+  }
+
   fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
     self.selected_range = offset..offset;
 
@@ -820,14 +914,18 @@ impl EntityInputHandler for Editor {
       .or(self.marked_range.clone())
       .unwrap_or(self.selected_range.clone());
 
+    let selection_before = self.selected_range.clone();
     let start_line = self.document.read(cx).char_to_line(range.start);
     let end_line = self.document.read(cx).char_to_line(range.end);
 
-    self.document.update(cx, |doc, cx| {
-      doc.replace(range.clone(), new_text, cx);
+    let transaction_id = self.document.update(cx, |doc, cx| {
+      let id = doc.buffer.transaction(Instant::now(), |buffer, tx| {
+        buffer.replace(tx, range.clone(), new_text);
+      });
+      cx.notify();
+      id
     });
 
-    // Only invalidate affected line(s)
     let has_newline = new_text.contains('\n');
 
     if has_newline || start_line != end_line {
@@ -840,6 +938,11 @@ impl EntityInputHandler for Editor {
 
     self.selected_range = range.start + new_text.len()..range.start + new_text.len();
     self.marked_range.take();
+
+    let selection_after = self.selected_range.clone();
+
+    self.record_transaction(transaction_id, selection_before, selection_after);
+
     cx.notify();
   }
 
@@ -939,6 +1042,8 @@ impl Render for Editor {
       .on_action(cx.listener(Self::paste))
       .on_action(cx.listener(Self::cut))
       .on_action(cx.listener(Self::copy))
+      .on_action(cx.listener(Self::undo))
+      .on_action(cx.listener(Self::redo))
       .when_else(
         self.focus_handle(cx).is_focused(window),
         |d| d.border(px(2.)).border_color(green()),
@@ -971,7 +1076,7 @@ mod tests {
     #[allow(dead_code)]
     fn new(mut cx: TestAppContext) -> Self {
       let editor = cx.new(|cx| {
-        let doc = cx.new(|cx| Document::new(cx));
+        let doc = cx.new(Document::new);
         Editor {
           document: doc,
           focus_handle: cx.focus_handle(),
@@ -984,6 +1089,8 @@ mod tests {
           viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
           max_cache_size: MAX_CACHE_SIZE,
           target_column: None,
+          undo_stack: VecDeque::new(),
+          redo_stack: VecDeque::new(),
         }
       });
 
@@ -1006,6 +1113,8 @@ mod tests {
           viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
           max_cache_size: MAX_CACHE_SIZE,
           target_column: None,
+          undo_stack: VecDeque::new(),
+          redo_stack: VecDeque::new(),
         }
       });
 

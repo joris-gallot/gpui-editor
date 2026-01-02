@@ -1,22 +1,23 @@
 use crate::buffer::TextBuffer;
 use gpui::Context;
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, ops::Range, time::Instant};
 
 pub struct Document {
-  buffer: TextBuffer,
+  pub buffer: TextBuffer,
 }
 
 impl Document {
+  #[cfg(test)]
   pub fn new(_cx: &mut Context<Self>) -> Self {
     Self {
       buffer: TextBuffer::new(),
     }
   }
 
-  pub fn with_text(text: &str, cx: &mut Context<Self>) -> Self {
-    let mut doc = Self::new(cx);
-    doc.buffer.insert(0, text);
-    doc
+  pub fn with_text(text: &str, _cx: &mut Context<Self>) -> Self {
+    Self {
+      buffer: TextBuffer::from_text(text),
+    }
   }
 
   pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
@@ -55,14 +56,50 @@ impl Document {
     self.buffer.line_to_char(line_idx)
   }
 
+  #[cfg(test)]
   pub fn insert_char(&mut self, offset: usize, ch: char, cx: &mut Context<Self>) {
-    self.buffer.insert_char(offset, ch);
+    self.buffer.transaction(Instant::now(), |buffer, tx| {
+      buffer.insert(tx, offset, &ch.to_string());
+    });
     cx.notify();
   }
 
   pub fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
-    self.buffer.replace(range, text);
+    self.buffer.transaction(Instant::now(), |buffer, tx| {
+      buffer.replace(tx, range, text);
+    });
     cx.notify();
+  }
+
+  pub fn undo(&mut self, cx: &mut Context<Self>) -> Option<crate::buffer::TransactionId> {
+    let result = self.buffer.undo();
+    if result.is_some() {
+      cx.notify();
+    }
+    result
+  }
+
+  pub fn redo(&mut self, cx: &mut Context<Self>) -> Option<crate::buffer::TransactionId> {
+    let result = self.buffer.redo();
+    if result.is_some() {
+      cx.notify();
+    }
+    result
+  }
+
+  #[cfg(test)]
+  pub fn can_undo(&self) -> bool {
+    self.buffer.can_undo()
+  }
+
+  #[cfg(test)]
+  pub fn can_redo(&self) -> bool {
+    self.buffer.can_redo()
+  }
+
+  #[cfg(test)]
+  pub fn set_group_interval(&mut self, interval: std::time::Duration) {
+    self.buffer.set_group_interval(interval);
   }
 }
 
@@ -202,6 +239,91 @@ mod tests {
     let doc = cx.new(|cx| Document::with_text("line1\r\n", cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
+    });
+  }
+
+  #[gpui::test]
+  fn test_document_undo(cx: &mut TestAppContext) {
+    let doc = cx.new(Document::new);
+
+    doc.update(cx, |doc, _cx| {
+      doc.set_group_interval(std::time::Duration::from_millis(0));
+    });
+
+    doc.update(cx, |doc, cx| {
+      doc.insert_char(0, 'a', cx);
+      doc.insert_char(1, 'b', cx);
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert_eq!(doc.slice_to_string(0..2), "ab");
+    });
+
+    doc.update(cx, |doc, cx| {
+      assert!(doc.undo(cx).is_some());
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert_eq!(doc.len(), 1);
+      assert_eq!(doc.slice_to_string(0..1), "a");
+    });
+  }
+
+  #[gpui::test]
+  fn test_document_redo(cx: &mut TestAppContext) {
+    let doc = cx.new(Document::new);
+
+    doc.update(cx, |doc, _cx| {
+      doc.set_group_interval(std::time::Duration::from_millis(0));
+    });
+
+    doc.update(cx, |doc, cx| {
+      doc.insert_char(0, 'a', cx);
+      doc.undo(cx);
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert_eq!(doc.len(), 0);
+    });
+
+    doc.update(cx, |doc, cx| {
+      assert!(doc.redo(cx).is_some());
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert_eq!(doc.slice_to_string(0..1), "a");
+    });
+  }
+
+  #[gpui::test]
+  fn test_document_can_undo_redo(cx: &mut TestAppContext) {
+    let doc = cx.new(Document::new);
+
+    doc.update(cx, |doc, _cx| {
+      doc.set_group_interval(std::time::Duration::from_millis(0));
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert!(!doc.can_undo());
+      assert!(!doc.can_redo());
+    });
+
+    doc.update(cx, |doc, cx| {
+      doc.insert_char(0, 'a', cx);
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert!(doc.can_undo());
+      assert!(!doc.can_redo());
+    });
+
+    doc.update(cx, |doc, cx| {
+      doc.undo(cx);
+    });
+
+    doc.read_with(cx, |doc, _| {
+      assert!(!doc.can_undo());
+      assert!(doc.can_redo());
     });
   }
 }
