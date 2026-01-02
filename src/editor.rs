@@ -13,7 +13,7 @@ use crate::{
 use gpui::{
   App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
   Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-  UTF16Selection, Window, actions, div, green, prelude::*, px, red, white,
+  UTF16Selection, Window, actions, black, div, prelude::*, px, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -93,6 +93,8 @@ pub struct Editor {
 
   undo_stack: VecDeque<Transaction>,
   redo_stack: VecDeque<Transaction>,
+
+  is_dark_mode: bool,
 }
 
 impl Editor {
@@ -122,6 +124,7 @@ impl Editor {
       target_column: None,
       undo_stack: VecDeque::new(),
       redo_stack: VecDeque::new(),
+      is_dark_mode: true,
     }
   }
 
@@ -1004,7 +1007,7 @@ impl EntityInputHandler for Editor {
 }
 
 impl Render for Editor {
-  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     div()
       .key_context("Editor")
       .track_focus(&self.focus_handle(cx))
@@ -1044,12 +1047,12 @@ impl Render for Editor {
       .on_action(cx.listener(Self::copy))
       .on_action(cx.listener(Self::undo))
       .on_action(cx.listener(Self::redo))
+      .when_else(self.is_dark_mode, |el| el.bg(black()), |el| el.bg(white()))
       .when_else(
-        self.focus_handle(cx).is_focused(window),
-        |d| d.border(px(2.)).border_color(green()),
-        |d| d.border(px(2.)).border_color(red()),
+        self.is_dark_mode,
+        |el| el.text_color(white()),
+        |el| el.text_color(black()),
       )
-      .bg(white())
       .child(EditorElement::new(cx.entity().clone()))
   }
 }
@@ -1091,6 +1094,7 @@ mod tests {
           target_column: None,
           undo_stack: VecDeque::new(),
           redo_stack: VecDeque::new(),
+          is_dark_mode: false,
         }
       });
 
@@ -1115,6 +1119,7 @@ mod tests {
           target_column: None,
           undo_stack: VecDeque::new(),
           redo_stack: VecDeque::new(),
+          is_dark_mode: false,
         }
       });
 
