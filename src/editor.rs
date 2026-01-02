@@ -177,7 +177,7 @@ impl Editor {
   pub fn new(cx: &mut Context<Self>) -> Self {
     let content = generate_rust_test_content_100k();
 
-    let document = cx.new(|cx| Document::with_text_and_language(&content, Some("rs"), cx));
+    let document = cx.new(|cx| Document::new(&content, Some("rs"), cx));
 
     Self {
       document,
@@ -1177,7 +1177,7 @@ mod tests {
     #[allow(dead_code)]
     fn new(mut cx: TestAppContext) -> Self {
       let editor = cx.new(|cx| {
-        let doc = cx.new(Document::new);
+        let doc = cx.new(|cx| Document::new("", None, cx));
         Editor {
           document: doc,
           focus_handle: cx.focus_handle(),
@@ -1203,7 +1203,7 @@ mod tests {
     /// Create a test context with specific text content
     fn with_text(mut cx: TestAppContext, text: &str) -> Self {
       let editor = cx.new(|cx| {
-        let doc = cx.new(|cx| Document::with_text(text, cx));
+        let doc = cx.new(|cx| Document::new(text, None, cx));
         Editor {
           document: doc,
           focus_handle: cx.focus_handle(),

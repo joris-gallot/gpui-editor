@@ -23,33 +23,8 @@ pub struct Document {
 }
 
 impl Document {
-  #[cfg(test)]
-  pub fn new(_cx: &mut Context<Self>) -> Self {
-    Self {
-      buffer: TextBuffer::new(),
-      highlighter: None,
-      highlights: Arc::new(RwLock::new(Vec::new())),
-      pending_highlight_task: None,
-      highlights_version: Arc::new(RwLock::new(0)),
-    }
-  }
-
-  pub fn with_text(text: &str, _cx: &mut Context<Self>) -> Self {
-    Self {
-      buffer: TextBuffer::from_text(text),
-      highlighter: None,
-      highlights: Arc::new(RwLock::new(Vec::new())),
-      pending_highlight_task: None,
-      highlights_version: Arc::new(RwLock::new(0)),
-    }
-  }
-
   /// Create document with language detection for syntax highlighting
-  pub fn with_text_and_language(
-    text: &str,
-    file_ext: Option<&str>,
-    cx: &mut Context<Self>,
-  ) -> Self {
+  pub fn new(text: &str, file_ext: Option<&str>, cx: &mut Context<Self>) -> Self {
     let buffer = TextBuffer::from_text(text);
 
     let highlighter = file_ext
@@ -236,7 +211,7 @@ mod tests {
 
   #[gpui::test]
   fn test_new_document(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len(), 0);
       assert!(doc.is_empty());
@@ -246,7 +221,7 @@ mod tests {
 
   #[gpui::test]
   fn test_with_text(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("hello world", cx));
+    let doc = cx.new(|cx| Document::new("hello world", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len(), 11);
       assert!(!doc.is_empty());
@@ -257,7 +232,7 @@ mod tests {
 
   #[gpui::test]
   fn test_insert_char(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("hello", cx));
+    let doc = cx.new(|cx| Document::new("hello", None, cx));
     doc.update(cx, |doc, cx| {
       doc.insert_char(5, '!', cx);
       assert_eq!(doc.len(), 6);
@@ -267,7 +242,7 @@ mod tests {
 
   #[gpui::test]
   fn test_replace(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("hello world", cx));
+    let doc = cx.new(|cx| Document::new("hello world", None, cx));
     doc.update(cx, |doc, cx| {
       doc.replace(6..11, "Rust", cx);
       assert_eq!(doc.slice_to_string(0..10), "hello Rust");
@@ -276,7 +251,7 @@ mod tests {
 
   #[gpui::test]
   fn test_multiline_document(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\nline2\nline3", cx));
+    let doc = cx.new(|cx| Document::new("line1\nline2\nline3", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len_lines(), 3);
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
@@ -287,7 +262,7 @@ mod tests {
 
   #[gpui::test]
   fn test_line_range(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("abc\ndef\nghi", cx));
+    let doc = cx.new(|cx| Document::new("abc\ndef\nghi", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_range(0), Some(0..4));
       assert_eq!(doc.line_range(1), Some(4..8));
@@ -297,7 +272,7 @@ mod tests {
 
   #[gpui::test]
   fn test_char_line_conversion(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("abc\ndef\nghi", cx));
+    let doc = cx.new(|cx| Document::new("abc\ndef\nghi", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.char_to_line(0), 0);
       assert_eq!(doc.char_to_line(4), 1);
@@ -311,7 +286,7 @@ mod tests {
 
   #[gpui::test]
   fn test_chars_iterator(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("abc", cx));
+    let doc = cx.new(|cx| Document::new("abc", None, cx));
     doc.read_with(cx, |doc, _| {
       let chars: Vec<char> = doc.chars().collect();
       assert_eq!(chars, vec!['a', 'b', 'c']);
@@ -320,7 +295,7 @@ mod tests {
 
   #[gpui::test]
   fn test_unicode_handling(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("héllo 世界", cx));
+    let doc = cx.new(|cx| Document::new("héllo 世界", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len(), 8);
       assert_eq!(doc.slice_to_string(0..5), "héllo");
@@ -330,7 +305,7 @@ mod tests {
 
   #[gpui::test]
   fn test_empty_lines(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("\n\n\n", cx));
+    let doc = cx.new(|cx| Document::new("\n\n\n", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.len_lines(), 4);
       assert_eq!(doc.line_content(0).as_deref(), Some(""));
@@ -341,7 +316,7 @@ mod tests {
 
   #[gpui::test]
   fn test_replace_multiline(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\nline2\nline3", cx));
+    let doc = cx.new(|cx| Document::new("line1\nline2\nline3", None, cx));
     doc.update(cx, |doc, cx| {
       doc.replace(6..11, "new1\nnew2", cx);
       assert_eq!(doc.len_lines(), 4);
@@ -354,7 +329,7 @@ mod tests {
 
   #[gpui::test]
   fn test_line_content_removes_newlines(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\n", cx));
+    let doc = cx.new(|cx| Document::new("line1\n", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
     });
@@ -362,7 +337,7 @@ mod tests {
 
   #[gpui::test]
   fn test_line_content_removes_crlf(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| Document::with_text("line1\r\n", cx));
+    let doc = cx.new(|cx| Document::new("line1\r\n", None, cx));
     doc.read_with(cx, |doc, _| {
       assert_eq!(doc.line_content(0).as_deref(), Some("line1"));
     });
@@ -370,7 +345,7 @@ mod tests {
 
   #[gpui::test]
   fn test_document_undo(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
 
     doc.update(cx, |doc, _cx| {
       doc.set_group_interval(std::time::Duration::from_millis(0));
@@ -397,7 +372,7 @@ mod tests {
 
   #[gpui::test]
   fn test_document_redo(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
 
     doc.update(cx, |doc, _cx| {
       doc.set_group_interval(std::time::Duration::from_millis(0));
@@ -423,7 +398,7 @@ mod tests {
 
   #[gpui::test]
   fn test_document_can_undo_redo(cx: &mut TestAppContext) {
-    let doc = cx.new(Document::new);
+    let doc = cx.new(|cx| Document::new("", None, cx));
 
     doc.update(cx, |doc, _cx| {
       doc.set_group_interval(std::time::Duration::from_millis(0));
