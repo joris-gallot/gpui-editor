@@ -12,12 +12,12 @@ use std::{
 
 pub struct Document {
   pub buffer: TextBuffer,
-  
+
   // Syntax highlighting support
   highlighter: Option<SyntaxHighlighter>,
   highlights: Arc<RwLock<Vec<HighlightSpan>>>,
   pending_highlight_task: Option<Task<()>>,
-  
+
   // Flag to track when highlights have been updated (for cache invalidation)
   pub highlights_version: Arc<RwLock<usize>>,
 }
@@ -43,19 +43,19 @@ impl Document {
       highlights_version: Arc::new(RwLock::new(0)),
     }
   }
-  
+
   /// Create document with language detection for syntax highlighting
   pub fn with_text_and_language(
     text: &str,
     file_ext: Option<&str>,
-    cx: &mut Context<Self>
+    cx: &mut Context<Self>,
   ) -> Self {
     let buffer = TextBuffer::from_text(text);
-    
+
     let highlighter = file_ext
       .and_then(languages::detect_language_config)
       .map(SyntaxHighlighter::new);
-    
+
     let mut doc = Self {
       buffer,
       highlighter,
@@ -63,12 +63,12 @@ impl Document {
       pending_highlight_task: None,
       highlights_version: Arc::new(RwLock::new(0)),
     };
-    
+
     // Schedule initial highlighting
     if doc.highlighter.is_some() {
       doc.schedule_recompute_highlights(cx);
     }
-    
+
     doc
   }
 
@@ -153,64 +153,65 @@ impl Document {
   pub fn set_group_interval(&mut self, interval: std::time::Duration) {
     self.buffer.set_group_interval(interval);
   }
-  
+
   /// Get syntax highlights for a specific line
   pub fn get_highlights_for_line(&self, line_idx: usize) -> Option<Vec<HighlightSpan>> {
     let highlights = self.highlights.read();
     let line_range = self.line_range(line_idx)?;
-    
+
     // Filter highlights that intersect this line
-    let line_highlights: Vec<_> = highlights.iter()
-      .filter(|h| {
-        h.byte_range.start < line_range.end &&
-        h.byte_range.end > line_range.start
-      })
+    let line_highlights: Vec<_> = highlights
+      .iter()
+      .filter(|h| h.byte_range.start < line_range.end && h.byte_range.end > line_range.start)
       .cloned()
       .collect();
-    
+
     if line_highlights.is_empty() {
       None
     } else {
       Some(line_highlights)
     }
   }
-  
+
   /// Schedule async re-highlighting with debouncing
   pub fn schedule_recompute_highlights(&mut self, cx: &mut Context<Self>) {
     // Cancel previous task
     self.pending_highlight_task = None;
-    
+
     let Some(ref mut highlighter) = self.highlighter else {
       return;
     };
-    
+
     let text = self.buffer.slice_to_string(0..self.buffer.len());
     let highlights_cache = self.highlights.clone();
     let highlights_version = self.highlights_version.clone();
-    
+
     // Clone highlighter config for background work
     let config = highlighter.config;
-    
+
     let task = cx.spawn(async move |this, cx| {
       // Debounce: wait 150ms
       cx.background_executor()
         .timer(Duration::from_millis(150))
         .await;
-      
+
       // Highlighting in background
-      let result = cx.background_executor().spawn(async move {
-        let mut bg_highlighter = SyntaxHighlighter::new(config);
-        bg_highlighter.highlight_text(&text)
-      }).await;
-      
+      let result = cx
+        .background_executor()
+        .spawn(async move {
+          let mut bg_highlighter = SyntaxHighlighter::new(config);
+          bg_highlighter.highlight_text(&text)
+        })
+        .await;
+
       // Update cache
       match result {
         Ok(highlights) => {
           *highlights_cache.write() = highlights;
-          
+
           // Increment version to signal that highlights have been updated
           *highlights_version.write() += 1;
-          
+
           // Notify UI to re-render
           let _ = this.update(cx, |_doc, cx| {
             cx.notify();
@@ -223,7 +224,7 @@ impl Document {
         }
       }
     });
-    
+
     self.pending_highlight_task = Some(task);
   }
 }

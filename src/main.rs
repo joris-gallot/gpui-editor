@@ -1,6 +1,6 @@
 use gpui::{
-  div, prelude::*, px, rgb, size, App, Application, Bounds, Context, Entity, FocusHandle,
-  Focusable, KeyBinding, Window, WindowBounds, WindowOptions,
+  App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Window,
+  WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 
 mod buffer;
