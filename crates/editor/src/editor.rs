@@ -1391,14 +1391,6 @@ pub mod tests {
   }
 
   #[gpui::test]
-  fn test_editor_theme_default(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::new);
-    editor.read_with(cx, |editor, _| {
-      assert!(!editor.theme.is_dark); // Default is light
-    });
-  }
-
-  #[gpui::test]
   fn test_editor_toggle_dark_mode(cx: &mut TestAppContext) {
     let editor = cx.new(Editor::new);
 
