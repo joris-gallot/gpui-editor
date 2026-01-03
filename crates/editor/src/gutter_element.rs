@@ -1,6 +1,6 @@
 use gpui::{
   App, Bounds, ElementId, Entity, GlobalElementId, InspectorElementId, LayoutId, Pixels, Style,
-  TextAlign, TextRun, Window, point, prelude::*, px, relative, rgb,
+  TextAlign, TextRun, Window, point, prelude::*, px, relative,
 };
 use std::ops::Range;
 
@@ -14,7 +14,7 @@ pub struct GutterPrepaintState {
   line_numbers: Vec<(usize, String)>,
   viewport: Range<usize>,
   line_height: Pixels,
-  is_dark: bool,
+  line_number_color: gpui::Hsla,
 }
 
 impl GutterElement {
@@ -66,7 +66,7 @@ impl Element for GutterElement {
     window: &mut Window,
     cx: &mut App,
   ) -> Self::PrepaintState {
-    let (viewport, line_numbers, line_height, is_dark) = {
+    let (viewport, line_numbers, line_height, line_number_color) = {
       let editor = self.editor.read(cx);
       let document = editor.document().read(cx);
       let line_height = window.line_height();
@@ -85,14 +85,16 @@ impl Element for GutterElement {
         line_numbers.push((line_idx, line_number));
       }
 
-      (viewport, line_numbers, line_height, editor.theme.is_dark)
+      let line_number_color = editor.theme.line_number();
+
+      (viewport, line_numbers, line_height, line_number_color)
     };
 
     GutterPrepaintState {
       line_numbers,
       viewport,
       line_height,
-      is_dark,
+      line_number_color,
     }
   }
 
@@ -108,11 +110,7 @@ impl Element for GutterElement {
   ) {
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let text_color = if prepaint.is_dark {
-      rgb(0x888888)
-    } else {
-      rgb(0x666666)
-    };
+    let text_color = prepaint.line_number_color;
 
     for (line_idx, line_number) in &prepaint.line_numbers {
       let y = bounds.top() + prepaint.line_height * (*line_idx - prepaint.viewport.start) as f32;

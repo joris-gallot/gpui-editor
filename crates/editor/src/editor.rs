@@ -9,7 +9,7 @@ use buffer::TransactionId;
 use gpui::{
   App, Bounds, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle, Focusable,
   MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, ShapedLine,
-  UTF16Selection, Window, black, div, point, prelude::*, px, rgb, white,
+  UTF16Selection, Window, black, div, point, prelude::*, px, white,
 };
 use syntax::Theme;
 
@@ -639,11 +639,7 @@ impl Render for Editor {
         div()
           .w(px(GUTTER_WIDTH))
           .h_full()
-          .when_else(
-            self.theme.is_dark,
-            |el| el.bg(rgb(0x1e1e1e)),
-            |el| el.bg(rgb(0xf5f5f5)),
-          )
+          .bg(self.theme.gutter_background())
           .child(GutterElement::new(cx.entity().clone())),
       )
       .child(
