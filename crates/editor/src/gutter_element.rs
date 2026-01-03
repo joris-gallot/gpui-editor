@@ -118,7 +118,7 @@ impl Element for GutterElement {
       let runs = vec![TextRun {
         len: line_number.len(),
         font: text_style.font(),
-        color: text_color.into(),
+        color: text_color,
         background_color: None,
         underline: None,
         strikethrough: None,
