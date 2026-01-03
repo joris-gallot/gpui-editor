@@ -100,7 +100,7 @@ mod tests {
 
   #[test]
   fn test_highlight_simple_rust() {
-    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let mut highlighter = SyntaxHighlighter::new(&RUST_CONFIG);
     let result = highlighter.highlight_text("fn main() {}");
 
     assert!(result.is_ok());
@@ -110,7 +110,7 @@ mod tests {
 
   #[test]
   fn test_highlight_keyword() {
-    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let mut highlighter = SyntaxHighlighter::new(&RUST_CONFIG);
     let result = highlighter.highlight_text("fn");
 
     assert!(result.is_ok());
@@ -126,7 +126,7 @@ mod tests {
 
   #[test]
   fn test_highlight_string() {
-    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let mut highlighter = SyntaxHighlighter::new(&RUST_CONFIG);
     let result = highlighter.highlight_text(r#"let s = "hello";"#);
 
     assert!(result.is_ok());
@@ -138,7 +138,7 @@ mod tests {
 
   #[test]
   fn test_highlight_comment() {
-    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let mut highlighter = SyntaxHighlighter::new(&RUST_CONFIG);
     let result = highlighter.highlight_text("// comment");
 
     assert!(result.is_ok());
@@ -152,7 +152,7 @@ mod tests {
 
   #[test]
   fn test_highlight_empty_text() {
-    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let mut highlighter = SyntaxHighlighter::new(&RUST_CONFIG);
     let result = highlighter.highlight_text("");
 
     assert!(result.is_ok());
@@ -161,7 +161,7 @@ mod tests {
 
   #[test]
   fn test_highlight_invalid_syntax_doesnt_panic() {
-    let mut highlighter = SyntaxHighlighter::new(&*RUST_CONFIG);
+    let mut highlighter = SyntaxHighlighter::new(&RUST_CONFIG);
     // Tree-sitter should handle invalid syntax gracefully
     let result = highlighter.highlight_text("fn {{{");
 
