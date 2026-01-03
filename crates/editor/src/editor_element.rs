@@ -366,7 +366,9 @@ impl Element for EditorElement {
 
           // TODO: Improve visual for newline selection
           // If selection is empty on this line (selecting just the newline),
-          let visual_x_end = if x_start == x_end {
+          // Only add width if we're actually selecting the newline character
+          let is_selecting_newline = sel_line_end > sel_line_start && x_start == x_end;
+          let visual_x_end = if is_selecting_newline {
             x_end + px(NEWLINE_SELECTION_WIDTH) // Small width to show newline selection
           } else {
             x_end
