@@ -14,10 +14,10 @@ use gpui::{
 use syntax::Theme;
 
 use crate::{
+  boundaries::{line_range_at_offset, word_range_at_offset},
   document::Document,
   editor_element::{EditorElement, PositionMap},
   gutter_element::GutterElement,
-  movement::{line_range_at_offset, word_range_at_offset},
 };
 
 #[derive(Clone, Debug)]

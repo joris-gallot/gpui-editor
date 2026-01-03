@@ -1,9 +1,9 @@
 mod actions;
+mod boundaries;
 mod document;
 mod editor;
 mod editor_element;
 mod gutter_element;
-mod movement;
 
 pub use actions::*;
 pub use document::Document;

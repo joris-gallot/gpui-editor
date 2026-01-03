@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use gpui::{ClipboardItem, Context, EntityInputHandler, Window, actions};
 
-use crate::{editor::Editor, movement};
+use crate::{boundaries, editor::Editor};
 
 actions!(
   editor,
@@ -83,7 +83,7 @@ pub fn backspace(
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.select_to(
-      movement::previous_boundary(editor, editor.cursor_offset(), cx),
+      boundaries::previous_boundary(editor, editor.cursor_offset(), cx),
       cx,
     )
   }
@@ -105,9 +105,9 @@ pub fn backspace_word(
 
     // If we're at the beginning of an empty line, behave like simple backspace
     if cursor == line_start && document.line_content(line).unwrap_or_default().is_empty() {
-      editor.select_to(movement::previous_boundary(editor, cursor, cx), cx);
+      editor.select_to(boundaries::previous_boundary(editor, cursor, cx), cx);
     } else {
-      editor.select_to(movement::previous_word_boundary(editor, cursor, cx), cx);
+      editor.select_to(boundaries::previous_word_boundary(editor, cursor, cx), cx);
     }
   }
   editor.replace_text_in_range(None, "", window, cx)
@@ -128,7 +128,7 @@ pub fn backspace_all(
 
     // If we're at the beginning of an empty line, behave like simple backspace
     if cursor == line_start && document.line_content(line).unwrap_or_default().is_empty() {
-      editor.select_to(movement::previous_boundary(editor, cursor, cx), cx);
+      editor.select_to(boundaries::previous_boundary(editor, cursor, cx), cx);
     } else {
       // Delete from start of current line to cursor
       editor.select_to(line_start, cx);
@@ -141,7 +141,7 @@ pub fn delete(editor: &mut Editor, _: &Delete, window: &mut Window, cx: &mut Con
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.select_to(
-      movement::next_boundary(editor, editor.cursor_offset(), cx),
+      boundaries::next_boundary(editor, editor.cursor_offset(), cx),
       cx,
     )
   }
@@ -216,7 +216,7 @@ pub fn left(editor: &mut Editor, _: &Left, _: &mut Window, cx: &mut Context<Edit
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
-      movement::previous_boundary(editor, editor.cursor_offset(), cx),
+      boundaries::previous_boundary(editor, editor.cursor_offset(), cx),
       cx,
     );
   } else {
@@ -228,7 +228,7 @@ pub fn alt_left(editor: &mut Editor, _: &AltLeft, _: &mut Window, cx: &mut Conte
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
-      movement::previous_word_boundary(editor, editor.cursor_offset(), cx),
+      boundaries::previous_word_boundary(editor, editor.cursor_offset(), cx),
       cx,
     );
   } else {
@@ -249,7 +249,7 @@ pub fn right(editor: &mut Editor, _: &Right, _: &mut Window, cx: &mut Context<Ed
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
-      movement::next_boundary(editor, editor.selected_range.end, cx),
+      boundaries::next_boundary(editor, editor.selected_range.end, cx),
       cx,
     );
   } else {
@@ -261,7 +261,7 @@ pub fn alt_right(editor: &mut Editor, _: &AltRight, _: &mut Window, cx: &mut Con
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
-      movement::next_word_boundary(editor, editor.selected_range.end, cx),
+      boundaries::next_word_boundary(editor, editor.selected_range.end, cx),
       cx,
     );
   } else {
@@ -407,7 +407,7 @@ pub fn select_down(
 pub fn select_left(editor: &mut Editor, _: &SelectLeft, _: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   editor.select_to(
-    movement::previous_boundary(editor, editor.cursor_offset(), cx),
+    boundaries::previous_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
 }
@@ -420,7 +420,7 @@ pub fn select_word_left(
 ) {
   editor.target_column = None;
   editor.select_to(
-    movement::previous_word_boundary(editor, editor.cursor_offset(), cx),
+    boundaries::previous_word_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
 }
@@ -433,7 +433,7 @@ pub fn select_right(
 ) {
   editor.target_column = None;
   editor.select_to(
-    movement::next_boundary(editor, editor.cursor_offset(), cx),
+    boundaries::next_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
 }
@@ -446,7 +446,7 @@ pub fn select_word_right(
 ) {
   editor.target_column = None;
   editor.select_to(
-    movement::next_word_boundary(editor, editor.cursor_offset(), cx),
+    boundaries::next_word_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
 }
