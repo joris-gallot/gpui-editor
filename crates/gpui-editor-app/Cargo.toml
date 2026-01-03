@@ -1,0 +1,9 @@
+[package]
+name = "gpui-editor-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+editor = { workspace = true }
+gpui = { workspace = true }

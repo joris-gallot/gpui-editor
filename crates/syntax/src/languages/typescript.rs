@@ -1,4 +1,4 @@
-use crate::syntax::LanguageConfig;
+use crate::highlighter::LanguageConfig;
 use once_cell::sync::Lazy;
 use tree_sitter_highlight::HighlightConfiguration;
 

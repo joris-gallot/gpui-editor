@@ -5,25 +5,25 @@ use std::{
   time::Instant,
 };
 
+use buffer::TransactionId;
+use gpui::{
+  App, Bounds, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle, Focusable,
+  MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, UTF16Selection, Window,
+  black, div, prelude::*, px, rgb, white,
+};
+use syntax::Theme;
+
 use crate::{
-  buffer::TransactionId,
   document::Document,
   editor_element::{EditorElement, PositionMap},
   gutter_element::GutterElement,
-  theme::Theme,
 };
-use gpui::{
-  App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
-  Focusable, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-  UTF16Selection, Window, actions, black, div, prelude::*, px, rgb, white,
-};
-use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Debug)]
-struct Transaction {
-  id: TransactionId,
-  selection_before: Range<usize>,
-  selection_after: Range<usize>,
+pub struct Transaction {
+  pub id: TransactionId,
+  pub selection_before: Range<usize>,
+  pub selection_after: Range<usize>,
 }
 
 // Default viewport height before first render
@@ -32,47 +32,6 @@ const DEFAULT_VIEWPORT_HEIGHT: f32 = 800.0;
 const MAX_CACHE_SIZE: usize = 200;
 // Number of lines of padding when auto-scrolling to cursor
 const SCROLL_PADDING: usize = 3;
-
-actions!(
-  editor,
-  [
-    Enter,
-    Backspace,
-    BackspaceWord,
-    BackspaceAll,
-    Delete,
-    Up,
-    Down,
-    Left,
-    AltLeft,
-    CmdLeft,
-    Right,
-    CmdRight,
-    AltRight,
-    CmdUp,
-    CmdDown,
-    SelectUp,
-    SelectDown,
-    SelectLeft,
-    SelectRight,
-    SelectCmdLeft,
-    SelectCmdRight,
-    SelectCmdUp,
-    SelectCmdDown,
-    SelectWordLeft,
-    SelectWordRight,
-    SelectAll,
-    Home,
-    End,
-    ShowCharacterPalette,
-    Paste,
-    Cut,
-    Copy,
-    Undo,
-    Redo,
-    Quit,
-  ]
-);
 
 pub struct Editor {
   pub document: Entity<Document>,
@@ -88,13 +47,13 @@ pub struct Editor {
   pub viewport_height: Pixels,
 
   // Cache size limit to prevent memory issues with large files
-  max_cache_size: usize,
+  pub(crate) max_cache_size: usize,
 
   // Target column for vertical navigation
-  target_column: Option<usize>,
+  pub(crate) target_column: Option<usize>,
 
-  undo_stack: VecDeque<Transaction>,
-  redo_stack: VecDeque<Transaction>,
+  pub(crate) undo_stack: VecDeque<Transaction>,
+  pub(crate) redo_stack: VecDeque<Transaction>,
 
   pub theme: Theme,
 
@@ -189,7 +148,7 @@ impl Editor {
       is_selecting: false,
       line_layouts: HashMap::new(),
       scroll_offset: 0.0,
-      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT), // Will be updated from actual bounds
+      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
       max_cache_size: MAX_CACHE_SIZE,
       target_column: None,
       undo_stack: VecDeque::new(),
@@ -209,12 +168,12 @@ impl Editor {
   }
 
   /// Invalidate a single line in the cache
-  fn invalidate_line(&mut self, line: usize) {
+  pub(crate) fn invalidate_line(&mut self, line: usize) {
     self.line_layouts.remove(&line);
   }
 
   /// Invalidate all lines from start_line onwards (for multi-line edits)
-  fn invalidate_lines_from(&mut self, start_line: usize) {
+  pub(crate) fn invalidate_lines_from(&mut self, start_line: usize) {
     self
       .line_layouts
       .retain(|&line_idx, _| line_idx < start_line);
@@ -232,7 +191,7 @@ impl Editor {
     }
   }
 
-  fn ensure_cursor_visible(&mut self, window: &Window, cx: &mut Context<Self>) {
+  pub(crate) fn ensure_cursor_visible(&mut self, window: &Window, cx: &mut Context<Self>) {
     let document = self.document.read(cx);
     let cursor_offset = self.cursor_offset();
     let cursor_line = document.char_to_line(cursor_offset);
@@ -264,377 +223,86 @@ impl Editor {
     self.scroll_offset = self.scroll_offset.max(0.0).min(max_scroll);
   }
 
-  fn enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    let cursor = self.cursor_offset();
-    let current_line = self.document.read(cx).char_to_line(cursor);
-    let selection_before = self.selected_range.clone();
-
-    let transaction_id = self.document.update(cx, |doc, cx| {
-      let id = doc.buffer.transaction(Instant::now(), |buffer, tx| {
-        buffer.insert(tx, cursor, "\n");
+  pub(crate) fn record_transaction(
+    &mut self,
+    id: TransactionId,
+    selection_before: Range<usize>,
+    selection_after: Range<usize>,
+  ) {
+    // Check if we should update an existing transaction with the same ID (grouping)
+    if let Some(transaction) = self.undo_stack.iter_mut().find(|t| t.id == id) {
+      transaction.selection_after = selection_after;
+    } else {
+      // Create new transaction
+      self.undo_stack.push_back(Transaction {
+        id,
+        selection_before,
+        selection_after,
       });
-      cx.notify();
-      id
-    });
-
-    self.move_to(cursor + 1, cx);
-    let selection_after = self.selected_range.clone();
-
-    self.record_transaction(transaction_id, selection_before, selection_after);
-
-    self.invalidate_lines_from(current_line);
-
-    self.ensure_cursor_visible(window, cx);
-  }
-
-  fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
-    let new_cursor = {
-      let document = self.document.read(cx);
-      let cursor_offset = self.cursor_offset();
-      let current_line = document.char_to_line(cursor_offset);
-
-      if current_line > 0 {
-        if self.target_column.is_none() {
-          let line_start = document.line_to_char(current_line);
-          self.target_column = Some(cursor_offset - line_start);
-        }
-
-        let target_column = self.target_column.unwrap();
-
-        // Calculate new position in target line
-        let target_line = current_line - 1;
-        let target_start = document.line_to_char(target_line);
-        let target_len = document.line_content(target_line).unwrap_or_default().len();
-
-        Some(target_start + target_column.min(target_len))
-      } else {
-        // On first line, go to beginning of buffer
-        self.target_column = None;
-        Some(0)
-      }
-    };
-
-    if let Some(cursor) = new_cursor {
-      self.move_to(cursor, cx);
-      self.ensure_cursor_visible(window, cx);
+      self.redo_stack.clear();
     }
   }
 
-  fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
-    let new_cursor = {
-      let document = self.document.read(cx);
-      let cursor_offset = self.cursor_offset();
-      let current_line = document.char_to_line(cursor_offset);
-
-      if current_line < document.len_lines().saturating_sub(1) {
-        if self.target_column.is_none() {
-          let line_start = document.line_to_char(current_line);
-          self.target_column = Some(cursor_offset - line_start);
-        }
-
-        let target_column = self.target_column.unwrap();
-
-        let target_line = current_line + 1;
-        let target_start = document.line_to_char(target_line);
-        let target_len = document.line_content(target_line).unwrap_or_default().len();
-
-        Some(target_start + target_column.min(target_len))
-      } else {
-        self.target_column = None;
-        Some(document.len())
-      }
-    };
-
-    if let Some(cursor) = new_cursor {
-      self.move_to(cursor, cx);
-      self.ensure_cursor_visible(window, cx);
-    }
-  }
-
-  fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      self.move_to(self.previous_boundary(self.cursor_offset(), cx), cx);
-    } else {
-      self.move_to(self.selected_range.start, cx)
-    }
-  }
-
-  fn alt_left(&mut self, _: &AltLeft, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      self.move_to(self.previous_word_boundary(self.cursor_offset(), cx), cx);
-    } else {
-      self.move_to(self.selected_range.start, cx)
-    }
-  }
-
-  fn cmd_left(&mut self, _: &CmdLeft, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    let document = self.document.read(cx);
-    let cursor = self.cursor_offset();
-    let line = document.char_to_line(cursor);
-    let line_start = document.line_to_char(line);
-    self.move_to(line_start, cx);
-  }
-
-  fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      self.move_to(self.next_boundary(self.selected_range.end, cx), cx);
-    } else {
-      self.move_to(self.selected_range.end, cx)
-    }
-  }
-
-  fn alt_right(&mut self, _: &AltRight, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      self.move_to(self.next_word_boundary(self.selected_range.end, cx), cx);
-    } else {
-      self.move_to(self.selected_range.end, cx)
-    }
-  }
-
-  fn cmd_right(&mut self, _: &CmdRight, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    let document = self.document.read(cx);
-    let cursor = self.cursor_offset();
-    let line = document.char_to_line(cursor);
-    let line_range = document.line_range(line).unwrap_or(0..0);
-    // Go to end of line content (before the newline)
-    let line_content = document.line_content(line).unwrap_or_default();
-    let line_end = line_range.start + line_content.len();
-    self.move_to(line_end, cx);
-  }
-
-  fn cmd_up(&mut self, _: &CmdUp, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None; // Reset target column on jump
-    self.move_to(0, cx);
-    self.ensure_cursor_visible(window, cx);
-  }
-
-  fn cmd_down(&mut self, _: &CmdDown, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None; // Reset target column on jump
-    let document = self.document.read(cx);
-    self.move_to(document.len(), cx);
-    self.ensure_cursor_visible(window, cx);
-  }
-
-  fn select_cmd_left(&mut self, _: &SelectCmdLeft, _: &mut Window, cx: &mut Context<Self>) {
-    let document = self.document.read(cx);
-    let cursor = self.cursor_offset();
-    let line = document.char_to_line(cursor);
-    let line_start = document.line_to_char(line);
-    self.select_to(line_start, cx);
-  }
-
-  fn select_cmd_right(&mut self, _: &SelectCmdRight, _: &mut Window, cx: &mut Context<Self>) {
-    let document = self.document.read(cx);
-    let cursor = self.cursor_offset();
-    let line = document.char_to_line(cursor);
-    let line_range = document.line_range(line).unwrap_or(0..0);
-    let line_content = document.line_content(line).unwrap_or_default();
-    let line_end = line_range.start + line_content.len();
-    self.select_to(line_end, cx);
-  }
-
-  fn select_cmd_up(&mut self, _: &SelectCmdUp, window: &mut Window, cx: &mut Context<Self>) {
-    self.select_to(0, cx);
-    self.ensure_cursor_visible(window, cx);
-  }
-
-  fn select_cmd_down(&mut self, _: &SelectCmdDown, window: &mut Window, cx: &mut Context<Self>) {
-    let document = self.document.read(cx);
-    self.select_to(document.len(), cx);
-    self.ensure_cursor_visible(window, cx);
-  }
-
-  fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
-    // Keep the anchor point of the selection
-    let anchor = if self.selection_reversed {
-      self.selected_range.end
-    } else {
-      self.selected_range.start
-    };
-
-    // Calculate new cursor position (same logic as up())
-    let new_cursor = {
-      let document = self.document.read(cx);
-      let cursor_offset = self.cursor_offset();
-      let current_line = document.char_to_line(cursor_offset);
-
-      if current_line > 0 {
-        if self.target_column.is_none() {
-          let line_start = document.line_to_char(current_line);
-          self.target_column = Some(cursor_offset - line_start);
-        }
-
-        let target_column = self.target_column.unwrap();
-
-        let target_line = current_line - 1;
-        let target_start = document.line_to_char(target_line);
-        let target_len = document.line_content(target_line).unwrap_or_default().len();
-
-        Some(target_start + target_column.min(target_len))
-      } else {
-        self.target_column = None;
-        Some(0)
-      }
-    };
-
-    // Move cursor and extend selection
-    let cursor = new_cursor.unwrap();
-    if anchor <= cursor {
-      self.selected_range = anchor..cursor;
-      self.selection_reversed = false;
-    } else {
-      self.selected_range = cursor..anchor;
-      self.selection_reversed = true;
-    }
-    self.ensure_cursor_visible(window, cx);
+  pub(crate) fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+    self.selected_range = offset..offset;
     cx.notify();
   }
 
-  fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
-    // Keep the anchor point of the selection
-    let anchor = if self.selection_reversed {
-      self.selected_range.end
-    } else {
+  pub fn cursor_offset(&self) -> usize {
+    if self.selection_reversed {
       self.selected_range.start
-    };
-
-    // Calculate new cursor position (same logic as down())
-    let new_cursor = {
-      let document = self.document.read(cx);
-      let cursor_offset = self.cursor_offset();
-      let current_line = document.char_to_line(cursor_offset);
-      let total_lines = document.len_lines();
-
-      if current_line + 1 < total_lines {
-        if self.target_column.is_none() {
-          let line_start = document.line_to_char(current_line);
-          self.target_column = Some(cursor_offset - line_start);
-        }
-
-        let target_column = self.target_column.unwrap();
-
-        let target_line = current_line + 1;
-        let target_start = document.line_to_char(target_line);
-        let target_len = document.line_content(target_line).unwrap_or_default().len();
-
-        Some(target_start + target_column.min(target_len))
-      } else {
-        // On last line, go to end of buffer
-        self.target_column = None;
-        Some(document.len())
-      }
-    };
-
-    // Move cursor and extend selection
-    let cursor = new_cursor.unwrap();
-    if anchor <= cursor {
-      self.selected_range = anchor..cursor;
-      self.selection_reversed = false;
     } else {
-      self.selected_range = cursor..anchor;
-      self.selection_reversed = true;
+      self.selected_range.end
     }
-    self.ensure_cursor_visible(window, cx);
-    cx.notify();
   }
 
-  fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    self.select_to(self.previous_boundary(self.cursor_offset(), cx), cx);
-  }
-
-  fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    self.select_to(self.previous_word_boundary(self.cursor_offset(), cx), cx);
-  }
-
-  fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    self.select_to(self.next_boundary(self.cursor_offset(), cx), cx);
-  }
-
-  fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    self.select_to(self.next_word_boundary(self.cursor_offset(), cx), cx);
-  }
-
-  fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    let doc_len = self.document.read(cx).len();
-
-    self.move_to(0, cx);
-    self.select_to(doc_len, cx);
-  }
-
-  fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    self.move_to(0, cx);
-  }
-
-  fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    let doc_len = self.document.read(cx).len();
-    self.move_to(doc_len, cx);
-  }
-
-  fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      self.select_to(self.previous_boundary(self.cursor_offset(), cx), cx)
+  pub(crate) fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+    if self.selection_reversed {
+      self.selected_range.start = offset
+    } else {
+      self.selected_range.end = offset
+    };
+    if self.selected_range.end < self.selected_range.start {
+      self.selection_reversed = !self.selection_reversed;
+      self.selected_range = self.selected_range.end..self.selected_range.start;
     }
-    self.replace_text_in_range(None, "", window, cx)
+    cx.notify()
   }
 
-  fn backspace_word(&mut self, _: &BackspaceWord, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      let document = self.document.read(cx);
-      let cursor = self.cursor_offset();
-      let line = document.char_to_line(cursor);
-      let line_start = document.line_to_char(line);
+  pub(crate) fn offset_from_utf16(&self, offset: usize, cx: &App) -> usize {
+    let document = self.document.read(cx);
+    let mut utf16_count = 0;
 
-      // If we're at the beginning of an empty line, behave like simple backspace
-      if cursor == line_start && document.line_content(line).unwrap_or_default().is_empty() {
-        self.select_to(self.previous_boundary(cursor, cx), cx);
-      } else {
-        self.select_to(self.previous_word_boundary(cursor, cx), cx);
+    for (char_offset, ch) in document.chars().enumerate() {
+      if utf16_count >= offset {
+        return char_offset;
       }
+      utf16_count += ch.len_utf16();
     }
-    self.replace_text_in_range(None, "", window, cx)
+
+    document.len()
   }
 
-  fn backspace_all(&mut self, _: &BackspaceAll, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      let document = self.document.read(cx);
-      let cursor = self.cursor_offset();
-      let line = document.char_to_line(cursor);
-      let line_start = document.line_to_char(line);
+  pub(crate) fn offset_to_utf16(&self, offset: usize, cx: &App) -> usize {
+    let document = self.document.read(cx);
+    let mut utf16_offset = 0;
 
-      // If we're at the beginning of an empty line, behave like simple backspace
-      if cursor == line_start && document.line_content(line).unwrap_or_default().is_empty() {
-        self.select_to(self.previous_boundary(cursor, cx), cx);
-      } else {
-        // Delete from start of current line to cursor
-        self.select_to(line_start, cx);
+    for (char_count, ch) in document.chars().enumerate() {
+      if char_count >= offset {
+        break;
       }
+      utf16_offset += ch.len_utf16();
     }
-    self.replace_text_in_range(None, "", window, cx)
+
+    utf16_offset
   }
 
-  fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if self.selected_range.is_empty() {
-      self.select_to(self.next_boundary(self.cursor_offset(), cx), cx)
-    }
-    self.replace_text_in_range(None, "", window, cx)
+  pub(crate) fn range_to_utf16(&self, range: &Range<usize>, cx: &App) -> Range<usize> {
+    self.offset_to_utf16(range.start, cx)..self.offset_to_utf16(range.end, cx)
+  }
+
+  pub(crate) fn range_from_utf16(&self, range_utf16: &Range<usize>, cx: &App) -> Range<usize> {
+    self.offset_from_utf16(range_utf16.start, cx)..self.offset_from_utf16(range_utf16.end, cx)
   }
 
   pub fn mouse_left_down(
@@ -680,280 +348,6 @@ impl Editor {
     };
 
     self.select_to(offset, cx);
-  }
-
-  fn show_character_palette(
-    &mut self,
-    _: &ShowCharacterPalette,
-    window: &mut Window,
-    _: &mut Context<Self>,
-  ) {
-    window.show_character_palette();
-  }
-
-  fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-      let cursor = self.cursor_offset();
-      let current_line = self.document.read(cx).char_to_line(cursor);
-      self.replace_text_in_range(None, &text, window, cx);
-      // Invalidate cache from current line onwards since paste may add multiple lines
-      self.invalidate_lines_from(current_line);
-    }
-  }
-
-  fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-    if !self.selected_range.is_empty() {
-      cx.write_to_clipboard(ClipboardItem::new_string(
-        self
-          .document
-          .read(cx)
-          .slice_to_string(self.selected_range.clone()),
-      ));
-    }
-  }
-
-  fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-    self.target_column = None;
-    if !self.selected_range.is_empty() {
-      let cursor = self.cursor_offset();
-      let current_line = self.document.read(cx).char_to_line(cursor);
-      cx.write_to_clipboard(ClipboardItem::new_string(
-        self
-          .document
-          .read(cx)
-          .slice_to_string(self.selected_range.clone()),
-      ));
-      self.replace_text_in_range(None, "", window, cx);
-      // Invalidate cache from current line onwards since cut may affect multiple lines
-      self.invalidate_lines_from(current_line);
-    }
-  }
-
-  fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
-    if let Some(transaction) = self.undo_stack.pop_back() {
-      let buffer_tx_id = self.document.update(cx, |doc, cx| {
-        let result = doc.undo(cx);
-
-        // Trigger async syntax re-highlighting after undo
-        if result.is_some() {
-          doc.schedule_recompute_highlights(cx);
-        }
-
-        result
-      });
-
-      // Only restore selection if buffer undo succeeded
-      if buffer_tx_id.is_some() {
-        // Restore cursor position from before the transaction
-        self.selected_range = transaction.selection_before.clone();
-        self.selection_reversed = false;
-
-        // Invalidate cache (content may have changed significantly)
-        self.line_layouts.clear();
-
-        // Move transaction to redo stack
-        self.redo_stack.push_back(transaction);
-
-        cx.notify();
-      } else {
-        // Buffer undo failed, push transaction back
-        self.undo_stack.push_back(transaction);
-      }
-    }
-  }
-
-  fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
-    if let Some(transaction) = self.redo_stack.pop_back() {
-      let buffer_tx_id = self.document.update(cx, |doc, cx| {
-        let result = doc.redo(cx);
-
-        // Trigger async syntax re-highlighting after redo
-        if result.is_some() {
-          doc.schedule_recompute_highlights(cx);
-        }
-
-        result
-      });
-
-      // Only restore selection if buffer redo succeeded
-      if buffer_tx_id.is_some() {
-        // Restore cursor position from after the transaction
-        self.selected_range = transaction.selection_after.clone();
-        self.selection_reversed = false;
-
-        // Invalidate cache
-        self.line_layouts.clear();
-
-        // Move transaction to undo stack
-        self.undo_stack.push_back(transaction);
-
-        cx.notify();
-      } else {
-        // Buffer redo failed, push transaction back
-        self.redo_stack.push_back(transaction);
-      }
-    }
-  }
-
-  fn record_transaction(
-    &mut self,
-    id: TransactionId,
-    selection_before: Range<usize>,
-    selection_after: Range<usize>,
-  ) {
-    // Check if we should update an existing transaction with the same ID (grouping)
-    if let Some(transaction) = self.undo_stack.iter_mut().find(|t| t.id == id) {
-      transaction.selection_after = selection_after;
-    } else {
-      // Create new transaction
-      self.undo_stack.push_back(Transaction {
-        id,
-        selection_before,
-        selection_after,
-      });
-      self.redo_stack.clear();
-    }
-  }
-
-  fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-    self.selected_range = offset..offset;
-
-    cx.notify();
-  }
-
-  pub fn cursor_offset(&self) -> usize {
-    if self.selection_reversed {
-      self.selected_range.start
-    } else {
-      self.selected_range.end
-    }
-  }
-
-  fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-    if self.selection_reversed {
-      self.selected_range.start = offset
-    } else {
-      self.selected_range.end = offset
-    };
-    if self.selected_range.end < self.selected_range.start {
-      self.selection_reversed = !self.selection_reversed;
-      self.selected_range = self.selected_range.end..self.selected_range.start;
-    }
-    cx.notify()
-  }
-
-  fn offset_from_utf16(&self, offset: usize, cx: &App) -> usize {
-    let document = self.document.read(cx);
-    let mut utf16_count = 0;
-
-    for (char_offset, ch) in document.chars().enumerate() {
-      if utf16_count >= offset {
-        return char_offset;
-      }
-      utf16_count += ch.len_utf16();
-    }
-
-    document.len()
-  }
-
-  fn offset_to_utf16(&self, offset: usize, cx: &App) -> usize {
-    let document = self.document.read(cx);
-    let mut utf16_offset = 0;
-
-    for (char_count, ch) in document.chars().enumerate() {
-      if char_count >= offset {
-        break;
-      }
-      utf16_offset += ch.len_utf16();
-    }
-
-    utf16_offset
-  }
-
-  fn range_to_utf16(&self, range: &Range<usize>, cx: &App) -> Range<usize> {
-    self.offset_to_utf16(range.start, cx)..self.offset_to_utf16(range.end, cx)
-  }
-
-  fn range_from_utf16(&self, range_utf16: &Range<usize>, cx: &App) -> Range<usize> {
-    self.offset_from_utf16(range_utf16.start, cx)..self.offset_from_utf16(range_utf16.end, cx)
-  }
-
-  fn previous_boundary(&self, offset: usize, _cx: &mut Context<Self>) -> usize {
-    if offset == 0 {
-      return 0;
-    }
-
-    // Simply move back one char - Ropey handles char boundaries correctly
-    offset.saturating_sub(1)
-  }
-
-  fn previous_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
-    if offset == 0 {
-      return 0;
-    }
-
-    let doc = self.document.read(cx);
-
-    // Work on a slice around the cursor instead of entire buffer
-    // Get up to 1000 chars before cursor (enough for any reasonable word navigation)
-    let start = offset.saturating_sub(1000);
-    let slice = doc.slice_to_string(start..offset);
-    let relative_offset = offset - start;
-
-    // Find word boundaries in the slice
-    let mut last_boundary = 0;
-    for (idx, _) in slice.unicode_word_indices() {
-      if idx < relative_offset {
-        last_boundary = idx;
-      } else {
-        break;
-      }
-    }
-
-    start + last_boundary
-  }
-
-  fn next_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
-    let doc = self.document.read(cx);
-    let doc_len = doc.len();
-
-    if offset >= doc_len {
-      return doc_len;
-    }
-
-    // Simply move forward one char - Ropey handles char boundaries correctly
-    (offset + 1).min(doc_len)
-  }
-
-  fn next_word_boundary(&self, offset: usize, cx: &mut Context<Self>) -> usize {
-    let doc = self.document.read(cx);
-    let doc_len = doc.len();
-
-    if offset >= doc_len {
-      return doc_len;
-    }
-
-    // Work on a slice around the cursor instead of entire buffer
-    // Get up to 1000 chars after cursor
-    let end = (offset + 1000).min(doc_len);
-    let slice = doc.slice_to_string(offset..end);
-
-    // Find the next word boundary in the slice
-    let mut word_indices = slice.unicode_word_indices();
-
-    // Find the first word boundary after the start
-    if let Some((idx, _)) = word_indices.next() {
-      if idx > 0 {
-        return offset + idx;
-      }
-      // If we're at the start of a word, find the next one
-      if let Some((idx, _)) = word_indices.next() {
-        return offset + idx;
-      }
-    }
-
-    end
   }
 }
 
@@ -1111,40 +505,40 @@ impl Render for Editor {
       .track_focus(&self.focus_handle(cx))
       .cursor(CursorStyle::IBeam)
       .size_full()
-      .on_action(cx.listener(Self::enter))
-      .on_action(cx.listener(Self::backspace))
-      .on_action(cx.listener(Self::backspace_word))
-      .on_action(cx.listener(Self::backspace_all))
-      .on_action(cx.listener(Self::delete))
-      .on_action(cx.listener(Self::up))
-      .on_action(cx.listener(Self::down))
-      .on_action(cx.listener(Self::left))
-      .on_action(cx.listener(Self::alt_left))
-      .on_action(cx.listener(Self::cmd_left))
-      .on_action(cx.listener(Self::right))
-      .on_action(cx.listener(Self::alt_right))
-      .on_action(cx.listener(Self::cmd_right))
-      .on_action(cx.listener(Self::cmd_up))
-      .on_action(cx.listener(Self::cmd_down))
-      .on_action(cx.listener(Self::select_cmd_left))
-      .on_action(cx.listener(Self::select_cmd_right))
-      .on_action(cx.listener(Self::select_cmd_up))
-      .on_action(cx.listener(Self::select_cmd_down))
-      .on_action(cx.listener(Self::select_up))
-      .on_action(cx.listener(Self::select_down))
-      .on_action(cx.listener(Self::select_left))
-      .on_action(cx.listener(Self::select_word_left))
-      .on_action(cx.listener(Self::select_right))
-      .on_action(cx.listener(Self::select_word_right))
-      .on_action(cx.listener(Self::select_all))
-      .on_action(cx.listener(Self::home))
-      .on_action(cx.listener(Self::end))
-      .on_action(cx.listener(Self::show_character_palette))
-      .on_action(cx.listener(Self::paste))
-      .on_action(cx.listener(Self::cut))
-      .on_action(cx.listener(Self::copy))
-      .on_action(cx.listener(Self::undo))
-      .on_action(cx.listener(Self::redo))
+      .on_action(cx.listener(crate::actions::enter))
+      .on_action(cx.listener(crate::actions::backspace))
+      .on_action(cx.listener(crate::actions::backspace_word))
+      .on_action(cx.listener(crate::actions::backspace_all))
+      .on_action(cx.listener(crate::actions::delete))
+      .on_action(cx.listener(crate::actions::up))
+      .on_action(cx.listener(crate::actions::down))
+      .on_action(cx.listener(crate::actions::left))
+      .on_action(cx.listener(crate::actions::alt_left))
+      .on_action(cx.listener(crate::actions::cmd_left))
+      .on_action(cx.listener(crate::actions::right))
+      .on_action(cx.listener(crate::actions::alt_right))
+      .on_action(cx.listener(crate::actions::cmd_right))
+      .on_action(cx.listener(crate::actions::cmd_up))
+      .on_action(cx.listener(crate::actions::cmd_down))
+      .on_action(cx.listener(crate::actions::select_cmd_left))
+      .on_action(cx.listener(crate::actions::select_cmd_right))
+      .on_action(cx.listener(crate::actions::select_cmd_up))
+      .on_action(cx.listener(crate::actions::select_cmd_down))
+      .on_action(cx.listener(crate::actions::select_up))
+      .on_action(cx.listener(crate::actions::select_down))
+      .on_action(cx.listener(crate::actions::select_left))
+      .on_action(cx.listener(crate::actions::select_word_left))
+      .on_action(cx.listener(crate::actions::select_right))
+      .on_action(cx.listener(crate::actions::select_word_right))
+      .on_action(cx.listener(crate::actions::select_all))
+      .on_action(cx.listener(crate::actions::home))
+      .on_action(cx.listener(crate::actions::end))
+      .on_action(cx.listener(crate::actions::show_character_palette))
+      .on_action(cx.listener(crate::actions::paste))
+      .on_action(cx.listener(crate::actions::cut))
+      .on_action(cx.listener(crate::actions::copy))
+      .on_action(cx.listener(crate::actions::undo))
+      .on_action(cx.listener(crate::actions::redo))
       .when_else(self.theme.is_dark, |el| el.bg(black()), |el| el.bg(white()))
       .when_else(
         self.theme.is_dark,
@@ -1181,46 +575,19 @@ impl Focusable for Editor {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
   use super::*;
   use gpui::TestAppContext;
 
   /// Helper context for testing Editor
-  struct EditorTestContext {
+  pub struct EditorTestContext {
     pub cx: TestAppContext,
     pub editor: Entity<Editor>,
   }
 
   impl EditorTestContext {
-    /// Create a new test context with empty document
-    #[allow(dead_code)]
-    fn new(mut cx: TestAppContext) -> Self {
-      let editor = cx.new(|cx| {
-        let doc = cx.new(|cx| Document::new("", None, cx));
-        Editor {
-          document: doc,
-          focus_handle: cx.focus_handle(),
-          selected_range: 0..0,
-          selection_reversed: false,
-          marked_range: None,
-          is_selecting: false,
-          line_layouts: HashMap::new(),
-          scroll_offset: 0.0,
-          viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
-          max_cache_size: MAX_CACHE_SIZE,
-          target_column: None,
-          undo_stack: VecDeque::new(),
-          redo_stack: VecDeque::new(),
-          theme: Theme::dark(),
-          last_highlights_version: 0,
-        }
-      });
-
-      Self { cx, editor }
-    }
-
     /// Create a test context with specific text content
-    fn with_text(mut cx: TestAppContext, text: &str) -> Self {
+    pub fn with_text(mut cx: TestAppContext, text: &str) -> Self {
       let editor = cx.new(|cx| {
         let doc = cx.new(|cx| Document::new(text, None, cx));
         Editor {
@@ -1246,7 +613,7 @@ mod tests {
     }
 
     /// Create a test context with multiple lines for testing
-    fn with_lines(cx: TestAppContext, count: usize) -> Self {
+    pub fn with_lines(cx: TestAppContext, count: usize) -> Self {
       let mut text = String::new();
       for i in 0..count {
         if i > 0 {
@@ -1258,7 +625,7 @@ mod tests {
     }
 
     /// Get the current text content
-    fn text(&self) -> String {
+    pub fn text(&self) -> String {
       self.editor.read_with(&self.cx, |editor, cx| {
         let doc = editor.document().read(cx);
         doc.slice_to_string(0..doc.len())
@@ -1266,14 +633,14 @@ mod tests {
     }
 
     /// Get the current cursor offset
-    fn cursor_offset(&self) -> usize {
+    pub fn cursor_offset(&self) -> usize {
       self
         .editor
         .read_with(&self.cx, |editor, _| editor.cursor_offset())
     }
 
     /// Get the current selection range
-    fn selection(&self) -> Range<usize> {
+    pub fn selection(&self) -> Range<usize> {
       self
         .editor
         .read_with(&self.cx, |editor, _| editor.selected_range.clone())
@@ -1281,21 +648,21 @@ mod tests {
 
     /// Get whether selection is reversed
     #[allow(dead_code)]
-    fn selection_reversed(&self) -> bool {
+    pub fn selection_reversed(&self) -> bool {
       self
         .editor
         .read_with(&self.cx, |editor, _| editor.selection_reversed)
     }
 
     /// Set cursor position (collapses selection)
-    fn set_cursor(&mut self, offset: usize) {
+    pub fn set_cursor(&mut self, offset: usize) {
       self.editor.update(&mut self.cx, |editor, cx| {
         editor.move_to(offset, cx);
       });
     }
 
     /// Set selection range
-    fn set_selection(&mut self, range: Range<usize>, reversed: bool) {
+    pub fn set_selection(&mut self, range: Range<usize>, reversed: bool) {
       self.editor.update(&mut self.cx, |editor, _| {
         editor.selected_range = range;
         editor.selection_reversed = reversed;
@@ -1303,14 +670,14 @@ mod tests {
     }
 
     /// Get the number of cached lines
-    fn cache_size(&self) -> usize {
+    pub fn cache_size(&self) -> usize {
       self
         .editor
         .read_with(&self.cx, |editor, _| editor.line_layouts.len())
     }
 
     /// Check if a specific line is cached
-    fn is_line_cached(&self, line_idx: usize) -> bool {
+    pub fn is_line_cached(&self, line_idx: usize) -> bool {
       self.editor.read_with(&self.cx, |editor, _| {
         editor.line_layouts.contains_key(&line_idx)
       })
@@ -1319,6 +686,7 @@ mod tests {
 
   // ============================================================================
   // Cache Management Tests
+  // ============================================================================
 
   #[gpui::test]
   fn test_invalidate_line_single(cx: &mut TestAppContext) {
@@ -1846,175 +1214,6 @@ mod tests {
         offset
       );
     }
-  }
-
-  // ============================================================================
-  // Word Boundary Tests
-  // ============================================================================
-
-  #[gpui::test]
-  fn test_previous_word_boundary_simple(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world foo");
-
-    // From end of "world" (offset 11), go to start of "world" (offset 6)
-    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.previous_word_boundary(11, cx)
-    });
-    assert_eq!(boundary, 6);
-  }
-
-  #[gpui::test]
-  fn test_previous_word_boundary_at_start(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
-
-    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.previous_word_boundary(0, cx)
-    });
-    assert_eq!(boundary, 0);
-  }
-
-  #[gpui::test]
-  fn test_previous_word_boundary_multiple_spaces(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello   world");
-
-    // From "world" back to start of "world"
-    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.previous_word_boundary(12, cx)
-    });
-    assert_eq!(boundary, 8);
-  }
-
-  #[gpui::test]
-  fn test_previous_word_boundary_underscore(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "foo_bar_baz");
-
-    // Underscores are part of words in unicode word segmentation
-    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.previous_word_boundary(11, cx)
-    });
-    assert_eq!(boundary, 0); // Should go to start of entire word
-  }
-
-  #[gpui::test]
-  fn test_previous_word_boundary_punctuation(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello, world!");
-
-    // From after "world" back to start of "world"
-    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.previous_word_boundary(12, cx)
-    });
-    assert_eq!(boundary, 7);
-  }
-
-  #[gpui::test]
-  fn test_next_word_boundary_simple(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world foo");
-
-    // From start of "hello" (offset 0), go to start of "world" (offset 6)
-    let boundary = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
-    assert_eq!(boundary, 6);
-  }
-
-  #[gpui::test]
-  fn test_next_word_boundary_at_end(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
-
-    let doc_len = ctx.text().len();
-    let boundary = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.next_word_boundary(doc_len, cx)
-    });
-    assert_eq!(boundary, doc_len);
-  }
-
-  #[gpui::test]
-  fn test_next_word_boundary_multiple_words(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "one two three");
-
-    // From "one" to "two"
-    let boundary1 = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
-    assert_eq!(boundary1, 4);
-
-    // From "two" to "three"
-    let boundary2 = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(4, cx));
-    assert_eq!(boundary2, 8);
-  }
-
-  #[gpui::test]
-  fn test_next_word_boundary_punctuation(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello, world!");
-
-    // From "hello" to "world"
-    let boundary = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
-    assert_eq!(boundary, 7);
-  }
-
-  #[gpui::test]
-  fn test_word_boundary_unicode(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello 世界 world");
-
-    // Previous word boundary from end
-    let prev = ctx.editor.update(&mut ctx.cx, |editor, cx| {
-      editor.previous_word_boundary(13, cx)
-    });
-    assert_eq!(prev, 9); // Start of "world"
-
-    // Next word boundary from start
-    let next = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_word_boundary(0, cx));
-    assert_eq!(next, 6); // Start of "世界"
-  }
-
-  // ============================================================================
-  // Character Boundary Tests
-  // ============================================================================
-
-  #[gpui::test]
-  fn test_previous_boundary(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
-
-    let boundary = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.previous_boundary(3, cx));
-    assert_eq!(boundary, 2);
-  }
-
-  #[gpui::test]
-  fn test_previous_boundary_at_start(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
-
-    let boundary = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.previous_boundary(0, cx));
-    assert_eq!(boundary, 0);
-  }
-
-  #[gpui::test]
-  fn test_next_boundary(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
-
-    let boundary = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_boundary(2, cx));
-    assert_eq!(boundary, 3);
-  }
-
-  #[gpui::test]
-  fn test_next_boundary_at_end(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
-
-    let boundary = ctx
-      .editor
-      .update(&mut ctx.cx, |editor, cx| editor.next_boundary(5, cx));
-    assert_eq!(boundary, 5);
   }
 
   // ============================================================================

@@ -1,27 +1,11 @@
+use editor::*;
 use gpui::{
   App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Window,
   WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 
-mod buffer;
-mod document;
-mod editor;
-mod editor_element;
-mod gutter_element;
-mod languages;
-mod syntax;
-mod theme;
-
-// Initial window size
 const INITIAL_WINDOW_WIDTH: f32 = 1200.0;
 const INITIAL_WINDOW_HEIGHT: f32 = 800.0;
-
-use editor::{
-  AltLeft, AltRight, Backspace, BackspaceAll, BackspaceWord, CmdDown, CmdLeft, CmdRight, CmdUp,
-  Copy, Cut, Delete, Down, Editor, End, Enter, Home, Left, Paste, Quit, Redo, Right, SelectAll,
-  SelectCmdDown, SelectCmdLeft, SelectCmdRight, SelectCmdUp, SelectDown, SelectLeft, SelectRight,
-  SelectUp, SelectWordLeft, SelectWordRight, ShowCharacterPalette, Undo, Up,
-};
 
 struct EditorExample {
   editor: Entity<Editor>,
@@ -108,7 +92,7 @@ fn main() {
 
     window
       .update(cx, |view, window, cx| {
-        window.focus(&view.editor.focus_handle(cx));
+        window.focus(&view.editor.focus_handle(cx), cx);
         cx.activate(true);
       })
       .unwrap();

@@ -1,7 +1,7 @@
 pub mod rust;
 pub mod typescript;
 
-use crate::syntax::LanguageConfig;
+use crate::highlighter::LanguageConfig;
 
 pub fn detect_language_config(extension: &str) -> Option<&'static LanguageConfig> {
   match extension {

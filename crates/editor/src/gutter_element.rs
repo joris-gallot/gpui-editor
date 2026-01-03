@@ -1,6 +1,6 @@
 use gpui::{
   App, Bounds, ElementId, Entity, GlobalElementId, InspectorElementId, LayoutId, Pixels, Style,
-  TextRun, Window, point, prelude::*, px, relative, rgb,
+  TextAlign, TextRun, Window, point, prelude::*, px, relative, rgb,
 };
 use std::ops::Range;
 
@@ -138,7 +138,14 @@ impl Element for GutterElement {
 
       let line_origin = point(x, y);
       shaped
-        .paint(line_origin, prepaint.line_height, window, cx)
+        .paint(
+          line_origin,
+          prepaint.line_height,
+          TextAlign::Right,
+          None,
+          window,
+          cx,
+        )
         .ok();
     }
   }

@@ -1,12 +1,13 @@
 use gpui::{
   App, Bounds, DispatchPhase, ElementId, ElementInputHandler, Entity, GlobalElementId,
   InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-  PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextRun, TextStyle,
-  Window, fill, point, prelude::*, px, relative, size,
+  PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextAlign, TextRun,
+  TextStyle, Window, fill, point, prelude::*, px, relative, size,
 };
 use std::{ops::Range, rc::Rc, sync::Arc};
 
-use crate::{document::Document, editor::Editor, syntax::HighlightSpan, theme::Theme};
+use crate::{document::Document, editor::Editor};
+use syntax::{HighlightSpan, Theme};
 
 // Visual width for empty line selection indicator
 const NEWLINE_SELECTION_WIDTH: f32 = 4.0;
@@ -498,7 +499,14 @@ impl Element for EditorElement {
     for (line_idx, shaped_line) in &prepaint.shaped_lines {
       let y = bounds.top() + prepaint.line_height * (*line_idx - prepaint.viewport.start) as f32;
       shaped_line
-        .paint(point(bounds.left(), y), prepaint.line_height, window, cx)
+        .paint(
+          point(bounds.left(), y),
+          prepaint.line_height,
+          TextAlign::Left,
+          None,
+          window,
+          cx,
+        )
         .ok();
     }
 

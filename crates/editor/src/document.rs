@@ -1,6 +1,4 @@
-use crate::buffer::TextBuffer;
-use crate::languages;
-use crate::syntax::{HighlightSpan, SyntaxHighlighter};
+use buffer::TextBuffer;
 use gpui::{Context, Task};
 use parking_lot::RwLock;
 use std::{
@@ -9,6 +7,8 @@ use std::{
   sync::Arc,
   time::{Duration, Instant},
 };
+use syntax::languages;
+use syntax::{HighlightSpan, SyntaxHighlighter};
 
 pub struct Document {
   pub buffer: TextBuffer,
@@ -98,7 +98,7 @@ impl Document {
     cx.notify();
   }
 
-  pub fn undo(&mut self, cx: &mut Context<Self>) -> Option<crate::buffer::TransactionId> {
+  pub fn undo(&mut self, cx: &mut Context<Self>) -> Option<buffer::TransactionId> {
     let result = self.buffer.undo();
     if result.is_some() {
       cx.notify();
@@ -106,7 +106,7 @@ impl Document {
     result
   }
 
-  pub fn redo(&mut self, cx: &mut Context<Self>) -> Option<crate::buffer::TransactionId> {
+  pub fn redo(&mut self, cx: &mut Context<Self>) -> Option<buffer::TransactionId> {
     let result = self.buffer.redo();
     if result.is_some() {
       cx.notify();
@@ -114,18 +114,15 @@ impl Document {
     result
   }
 
-  #[cfg(test)]
   pub fn can_undo(&self) -> bool {
     self.buffer.can_undo()
   }
 
-  #[cfg(test)]
   pub fn can_redo(&self) -> bool {
     self.buffer.can_redo()
   }
 
-  #[cfg(test)]
-  pub fn set_group_interval(&mut self, interval: std::time::Duration) {
+  pub fn set_group_interval(&mut self, interval: Duration) {
     self.buffer.set_group_interval(interval);
   }
 
