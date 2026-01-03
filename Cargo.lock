@@ -1469,6 +1469,7 @@ dependencies = [
  "buffer",
  "gpui",
  "parking_lot",
+ "smol",
  "syntax",
  "unicode-segmentation",
 ]

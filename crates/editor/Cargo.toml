@@ -10,6 +10,7 @@ syntax = { workspace = true }
 gpui = { workspace = true }
 unicode-segmentation = { workspace = true }
 parking_lot = { workspace = true }
+smol = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

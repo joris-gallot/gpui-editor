@@ -15,6 +15,7 @@ use syntax::Theme;
 
 use crate::{
   boundaries::{line_range_at_offset, word_range_at_offset},
+  cursor_blink::CursorBlink,
   document::Document,
   editor_element::{EditorElement, PositionMap},
   gutter_element::GutterElement,
@@ -60,6 +61,9 @@ pub struct Editor {
 
   // Track syntax highlighting version to invalidate cache when highlights change
   pub last_highlights_version: usize,
+
+  // Cursor blinking
+  pub cursor_blink: Entity<CursorBlink>,
 }
 
 fn generate_rust_test_content_100k() -> String {
@@ -139,6 +143,7 @@ impl Editor {
     let content = generate_rust_test_content_100k();
 
     let document = cx.new(|cx| Document::new(&content, Some("rs"), cx));
+    let cursor_blink = cx.new(CursorBlink::new);
 
     Self {
       document,
@@ -156,6 +161,7 @@ impl Editor {
       redo_stack: VecDeque::new(),
       theme: Theme::light(),
       last_highlights_version: 0,
+      cursor_blink,
     }
   }
 
@@ -246,6 +252,10 @@ impl Editor {
 
   pub(crate) fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
     self.selected_range = offset..offset;
+    // Show cursor immediately on move
+    self.cursor_blink.update(cx, |blink, cx| {
+      blink.pause_blinking(cx);
+    });
     cx.notify();
   }
 
@@ -315,6 +325,11 @@ impl Editor {
   ) {
     self.target_column = None;
     self.is_selecting = true;
+
+    // Show cursor immediately on mouse down
+    self.cursor_blink.update(cx, |blink, cx| {
+      blink.pause_blinking(cx);
+    });
 
     let document = self.document.read(cx);
     let Some(offset) = position_map.point_for_position(event.position, document) else {
@@ -422,6 +437,10 @@ impl EntityInputHandler for Editor {
     _: &mut Window,
     cx: &mut Context<Self>,
   ) {
+    // Pause cursor blinking when typing
+    self.cursor_blink.update(cx, |blink, cx| {
+      blink.pause_blinking(cx);
+    });
     let range = range_utf16
       .as_ref()
       .map(|range_utf16| self.range_from_utf16(range_utf16, cx))
@@ -472,6 +491,10 @@ impl EntityInputHandler for Editor {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
+    // Pause cursor blinking when typing
+    self.cursor_blink.update(cx, |blink, cx| {
+      blink.pause_blinking(cx);
+    });
     let range = range_utf16
       .as_ref()
       .map(|range_utf16| self.range_from_utf16(range_utf16, cx))
@@ -613,6 +636,7 @@ pub mod tests {
     pub fn with_text(mut cx: TestAppContext, text: &str) -> Self {
       let editor = cx.new(|cx| {
         let doc = cx.new(|cx| Document::new(text, None, cx));
+        let cursor_blink = cx.new(CursorBlink::new);
         Editor {
           document: doc,
           focus_handle: cx.focus_handle(),
@@ -629,6 +653,7 @@ pub mod tests {
           redo_stack: VecDeque::new(),
           theme: Theme::dark(),
           last_highlights_version: 0,
+          cursor_blink,
         }
       });
 

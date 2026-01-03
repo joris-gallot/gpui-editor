@@ -512,8 +512,12 @@ impl Element for EditorElement {
         .ok();
     }
 
-    // Paint cursor (if focused)
-    if is_focused && let Some(cursor_quad) = &prepaint.cursor_quad {
+    // Paint cursor (if focused and visible from blink)
+    let cursor_visible = self.editor.read(cx).cursor_blink.read(cx).visible();
+    if is_focused
+      && cursor_visible
+      && let Some(cursor_quad) = &prepaint.cursor_quad
+    {
       window.paint_quad(cursor_quad.clone());
     }
   }
