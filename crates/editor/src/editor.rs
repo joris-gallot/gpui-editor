@@ -8,8 +8,8 @@ use std::{
 use buffer::TransactionId;
 use gpui::{
   App, Bounds, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle, Focusable,
-  MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, UTF16Selection, Window,
-  black, div, prelude::*, px, rgb, white,
+  MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, ShapedLine,
+  UTF16Selection, Window, black, div, point, prelude::*, px, rgb, white,
 };
 use syntax::Theme;
 
@@ -28,12 +28,20 @@ pub struct Transaction {
   pub selection_after: Range<usize>,
 }
 
-// Default viewport height before first render
+/// Default viewport height before first render
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 800.0;
-// Maximum number of cached shaped lines
+/// Default viewport width before first render
+const DEFAULT_VIEWPORT_WIDTH: f32 = 1200.0;
+/// Default maximum line width
+pub const DEFAULT_MAX_LINE_WIDTH: f32 = 800.0;
+/// Maximum number of cached shaped lines
 const MAX_CACHE_SIZE: usize = 200;
-// Number of lines of padding when auto-scrolling to cursor
+/// Number of lines of padding when auto-scrolling to cursor
 const SCROLL_PADDING: usize = 3;
+/// Width of the gutter area
+const GUTTER_WIDTH: f32 = 70.0;
+/// Padding inside the editor content area
+const EDITOR_PADDING: f32 = 4.0;
 
 pub struct Editor {
   pub document: Entity<Document>,
@@ -45,8 +53,12 @@ pub struct Editor {
 
   // Performance: cache and viewport
   pub line_layouts: HashMap<usize, Arc<ShapedLine>>,
-  pub scroll_offset: f32, // In lines (0.0 = top)
+
+  pub scroll_offset_y: f32, // Vertical scroll offset in lines (0.0 = top, 1.5 = 1.5 lines down)
   pub viewport_height: Pixels,
+  pub viewport_width: Pixels,
+  pub max_line_width: Pixels, // Maximum width of visible lines (never decreases to avoid scroll jumps)
+  pub scroll_handle: ScrollHandle, // Handle for horizontal scrolling
 
   // Cache size limit to prevent memory issues with large files
   pub(crate) max_cache_size: usize,
@@ -67,20 +79,21 @@ pub struct Editor {
 }
 
 fn generate_rust_test_content_100k() -> String {
-  let base_content = r#"// Rust example with syntax highlighting
+  let base_content = r#"// Rust example with syntax highlighting - THIS IS A VERY LONG LINE TO TEST HORIZONTAL SCROLLING ============================================================================================================================================================================
 fn main() {
     let x = 42;
     let name = "World";
     println!("Hello, {}! The answer is {}", name, x);
+    let very_long_variable_name_to_test_horizontal_scrolling = "This is a very long string that should cause horizontal scrolling when displayed in the editor viewport because it exceeds the normal width of the editor window";
 
-    // Test various token types
+    // Test various token types with a very long comment that goes on and on and on and on and on and on and on and on and on and on and on and on and on and on and on and on and on and on and on and on
     let mut counter = 0;
     for i in 0..10 {
         counter += i;
     }
 
     if counter > 20 {
-        println!("Counter is greater than 20: {}", counter);
+        println!("Counter is greater than 20: {} - and here is some extra text to make this line very long so we can test horizontal scrolling in the editor viewport", counter);
     }
 }
 
@@ -98,7 +111,7 @@ impl Person {
     }
 
     fn greet(&self) {
-        println!("Hi, I'm {} and I'm {} years old", self.name, self.age);
+        println!("Hi, I'm {} and I'm {} years old - and this is another very long line that should demonstrate horizontal scrolling capabilities in the text editor with the sticky gutter feature", self.name, self.age);
     }
 }
 
@@ -107,7 +120,7 @@ fn fibonacci(n: u32) -> u32 {
     match n {
         0 => 0,
         1 => 1,
-        _ => fibonacci(n - 1) + fibonacci(n - 2),
+        _ => fibonacci(n - 1) + fibonacci(n - 2), // Recursive call with a long comment ===============================================================================================
     }
 }
 
@@ -116,7 +129,7 @@ enum Color {
     Red,
     Green,
     Blue,
-    RGB(u8, u8, u8),
+    RGB(u8, u8, u8), // RGB color variant with three u8 values representing red, green, and blue components respectively in the standard RGB color model used in computer graphics
 }
 
 trait Drawable {
@@ -153,13 +166,16 @@ impl Editor {
       marked_range: None,
       is_selecting: false,
       line_layouts: HashMap::new(),
-      scroll_offset: 0.0,
-      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
+      scroll_offset_y: 0.0,
+      viewport_height: px(DEFAULT_VIEWPORT_HEIGHT), // Will be updated on first render
+      viewport_width: px(DEFAULT_VIEWPORT_WIDTH),   // Will be updated on first render
+      max_line_width: px(DEFAULT_MAX_LINE_WIDTH),   // Will be updated on first render
+      scroll_handle: ScrollHandle::new(),
       max_cache_size: MAX_CACHE_SIZE,
       target_column: None,
       undo_stack: VecDeque::new(),
       redo_stack: VecDeque::new(),
-      theme: Theme::light(),
+      theme: Theme::dark(),
       last_highlights_version: 0,
       cursor_blink,
     }
@@ -212,22 +228,48 @@ impl Editor {
     let scroll_padding = SCROLL_PADDING;
 
     // Calculate the visible range with padding
-    let scroll_start = self.scroll_offset as usize;
+    let scroll_start = self.scroll_offset_y as usize;
     let scroll_end = scroll_start + visible_lines;
 
-    // Ensure cursor is within the visible range with padding
+    // Ensure cursor is within the visible range with padding (vertical)
     if cursor_line < scroll_start + scroll_padding {
       // Cursor is too close to top, scroll up
-      self.scroll_offset = (cursor_line.saturating_sub(scroll_padding)) as f32;
+      self.scroll_offset_y = (cursor_line.saturating_sub(scroll_padding)) as f32;
     } else if cursor_line >= scroll_end.saturating_sub(scroll_padding) {
       // Cursor is too close to bottom, scroll down
       let target_line = cursor_line + scroll_padding;
-      self.scroll_offset = (target_line as f32 - visible_lines as f32 + 1.0).max(0.0);
+      self.scroll_offset_y = (target_line as f32 - visible_lines as f32 + 1.0).max(0.0);
     }
 
-    // Clamp scroll_offset to valid range
+    // Ensure cursor is visible horizontally
+    if let Some(shaped_line) = self.line_layouts.get(&cursor_line) {
+      let line_start = document.line_to_char(cursor_line);
+      let cursor_in_line = cursor_offset - line_start;
+      let cursor_x = shaped_line.x_for_index(cursor_in_line);
+
+      let horizontal_padding = px(GUTTER_WIDTH) + px(EDITOR_PADDING) + px(100.0); // Extra padding for horizontal scrolling
+      let current_scroll_x = self.scroll_handle.offset().x;
+
+      // Note: scroll_x is negative when scrolled right (0 = left edge, -100 = scrolled 100px right)
+      // visible area in absolute coordinates: [-current_scroll_x, -current_scroll_x + viewport_width]
+      let visible_start_x = -current_scroll_x;
+      let visible_end_x = -current_scroll_x + self.viewport_width - px(70.0);
+
+      // Check if cursor is too far left
+      if cursor_x < visible_start_x + horizontal_padding {
+        let new_scroll_x = -(cursor_x - horizontal_padding).max(px(0.0));
+        self.scroll_handle.set_offset(point(new_scroll_x, px(0.0)));
+      }
+
+      // Check if cursor is too far right
+      if cursor_x > visible_end_x - horizontal_padding {
+        let new_scroll_x = -(cursor_x - self.viewport_width + horizontal_padding);
+        self.scroll_handle.set_offset(point(new_scroll_x, px(0.0)));
+      }
+    }
+
     let max_scroll = (total_lines as f32 - visible_lines as f32).max(0.0);
-    self.scroll_offset = self.scroll_offset.max(0.0).min(max_scroll);
+    self.scroll_offset_y = self.scroll_offset_y.clamp(0.0, max_scroll);
   }
 
   pub(crate) fn record_transaction(
@@ -595,7 +637,7 @@ impl Render for Editor {
       .flex_row()
       .child(
         div()
-          .w(px(70.0))
+          .w(px(GUTTER_WIDTH))
           .h_full()
           .when_else(
             self.theme.is_dark,
@@ -608,8 +650,16 @@ impl Render for Editor {
         div()
           .flex_1()
           .h_full()
-          .px(px(4.0))
-          .child(EditorElement::new(cx.entity().clone())),
+          .id("editor-content")
+          .overflow_x_scroll()
+          .track_scroll(&self.scroll_handle)
+          .px(px(EDITOR_PADDING))
+          .child(
+            div()
+              .min_w(self.max_line_width)
+              .h_full()
+              .child(EditorElement::new(cx.entity().clone())),
+          ),
       )
   }
 }
@@ -645,8 +695,11 @@ pub mod tests {
           marked_range: None,
           is_selecting: false,
           line_layouts: HashMap::new(),
-          scroll_offset: 0.0,
+          scroll_offset_y: 0.0,
           viewport_height: px(DEFAULT_VIEWPORT_HEIGHT),
+          viewport_width: px(DEFAULT_VIEWPORT_WIDTH),
+          max_line_width: px(DEFAULT_MAX_LINE_WIDTH),
+          scroll_handle: ScrollHandle::new(),
           max_cache_size: MAX_CACHE_SIZE,
           target_column: None,
           undo_stack: VecDeque::new(),

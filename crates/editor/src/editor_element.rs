@@ -6,7 +6,10 @@ use gpui::{
 };
 use std::{ops::Range, rc::Rc, sync::Arc};
 
-use crate::{document::Document, editor::Editor};
+use crate::{
+  document::Document,
+  editor::{DEFAULT_MAX_LINE_WIDTH, Editor},
+};
 use syntax::{HighlightSpan, Theme};
 
 // Visual width for empty line selection indicator
@@ -58,7 +61,7 @@ impl PositionMap {
 }
 
 /// Helper to convert syntax highlights to TextRuns for rendering
-fn highlights_to_text_runs(
+pub(crate) fn highlights_to_text_runs(
   highlights: &[HighlightSpan],
   line_text: &str,
   theme: &Theme,
@@ -214,6 +217,7 @@ impl Element for EditorElement {
       .read();
     self.editor.update(cx, |editor, _| {
       editor.viewport_height = bounds.size.height;
+      editor.viewport_width = window.bounds().size.width;
 
       // If highlights have been updated since last render, invalidate the cache
       if highlights_version > editor.last_highlights_version {
@@ -226,7 +230,7 @@ impl Element for EditorElement {
       let editor = self.editor.read(cx);
       let document = editor.document().read(cx);
       let line_height = window.line_height();
-      let scroll_offset = editor.scroll_offset;
+      let scroll_offset = editor.scroll_offset_y;
 
       let viewport =
         self.calculate_viewport(bounds, line_height, scroll_offset, document.len_lines());
@@ -310,6 +314,17 @@ impl Element for EditorElement {
         editor.ensure_cache_size(viewport.clone());
       });
     }
+
+    // Calculate maximum line width for horizontal scrolling
+    let max_width = shaped_lines
+      .iter()
+      .map(|(_, shaped)| shaped.width)
+      .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+      .unwrap_or(px(DEFAULT_MAX_LINE_WIDTH));
+
+    self.editor.update(cx, |editor, _| {
+      editor.max_line_width = editor.max_line_width.max(max_width);
+    });
 
     let document = self.editor.read(cx).document().read(cx);
 
@@ -481,11 +496,11 @@ impl Element for EditorElement {
               ScrollDelta::Lines(point) => -(point.y * LINE_SCROLL_MULTIPLIER), // Line scrolling (mouse wheel)
             };
 
-            let new_scroll = (editor.scroll_offset + scroll_delta)
+            let new_scroll = (editor.scroll_offset_y + scroll_delta)
               .max(0.0)
               .min((total_lines.saturating_sub(1)) as f32);
 
-            editor.scroll_offset = new_scroll;
+            editor.scroll_offset_y = new_scroll;
             cx.notify();
           });
         }

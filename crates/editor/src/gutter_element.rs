@@ -70,7 +70,7 @@ impl Element for GutterElement {
       let editor = self.editor.read(cx);
       let document = editor.document().read(cx);
       let line_height = window.line_height();
-      let scroll_offset = editor.scroll_offset;
+      let scroll_offset = editor.scroll_offset_y;
 
       // Calculate viewport (same logic as EditorElement)
       let visible_line_count = ((bounds.size.height / line_height).ceil() as usize).max(1);

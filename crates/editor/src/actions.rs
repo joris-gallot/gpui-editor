@@ -212,7 +212,7 @@ pub fn down(editor: &mut Editor, _: &Down, window: &mut Window, cx: &mut Context
   }
 }
 
-pub fn left(editor: &mut Editor, _: &Left, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn left(editor: &mut Editor, _: &Left, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
@@ -222,9 +222,10 @@ pub fn left(editor: &mut Editor, _: &Left, _: &mut Window, cx: &mut Context<Edit
   } else {
     editor.move_to(editor.selected_range.start, cx)
   }
+  editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn alt_left(editor: &mut Editor, _: &AltLeft, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn alt_left(editor: &mut Editor, _: &AltLeft, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
@@ -234,18 +235,20 @@ pub fn alt_left(editor: &mut Editor, _: &AltLeft, _: &mut Window, cx: &mut Conte
   } else {
     editor.move_to(editor.selected_range.start, cx)
   }
+  editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn cmd_left(editor: &mut Editor, _: &CmdLeft, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn cmd_left(editor: &mut Editor, _: &CmdLeft, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   let document = editor.document.read(cx);
   let cursor = editor.cursor_offset();
   let line = document.char_to_line(cursor);
   let line_start = document.line_to_char(line);
   editor.move_to(line_start, cx);
+  editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn right(editor: &mut Editor, _: &Right, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn right(editor: &mut Editor, _: &Right, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
@@ -255,9 +258,10 @@ pub fn right(editor: &mut Editor, _: &Right, _: &mut Window, cx: &mut Context<Ed
   } else {
     editor.move_to(editor.selected_range.end, cx)
   }
+  editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn alt_right(editor: &mut Editor, _: &AltRight, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn alt_right(editor: &mut Editor, _: &AltRight, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   if editor.selected_range.is_empty() {
     editor.move_to(
@@ -267,9 +271,10 @@ pub fn alt_right(editor: &mut Editor, _: &AltRight, _: &mut Window, cx: &mut Con
   } else {
     editor.move_to(editor.selected_range.end, cx)
   }
+  editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn cmd_right(editor: &mut Editor, _: &CmdRight, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn cmd_right(editor: &mut Editor, _: &CmdRight, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   let document = editor.document.read(cx);
   let cursor = editor.cursor_offset();
@@ -279,6 +284,7 @@ pub fn cmd_right(editor: &mut Editor, _: &CmdRight, _: &mut Window, cx: &mut Con
   let line_content = document.line_content(line).unwrap_or_default();
   let line_end = line_range.start + line_content.len();
   editor.move_to(line_end, cx);
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn cmd_up(editor: &mut Editor, _: &CmdUp, window: &mut Window, cx: &mut Context<Editor>) {
@@ -294,15 +300,17 @@ pub fn cmd_down(editor: &mut Editor, _: &CmdDown, window: &mut Window, cx: &mut 
   editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn home(editor: &mut Editor, _: &Home, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn home(editor: &mut Editor, _: &Home, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   editor.move_to(0, cx);
+  editor.ensure_cursor_visible(window, cx);
 }
 
-pub fn end(editor: &mut Editor, _: &End, _: &mut Window, cx: &mut Context<Editor>) {
+pub fn end(editor: &mut Editor, _: &End, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
   let doc_len = editor.document.read(cx).len();
   editor.move_to(doc_len, cx);
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn select_up(editor: &mut Editor, _: &SelectUp, window: &mut Window, cx: &mut Context<Editor>) {
