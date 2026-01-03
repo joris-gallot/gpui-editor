@@ -17,6 +17,7 @@ use crate::{
   document::Document,
   editor_element::{EditorElement, PositionMap},
   gutter_element::GutterElement,
+  movement::{line_range_at_offset, word_range_at_offset},
 };
 
 #[derive(Clone, Debug)]
@@ -323,7 +324,29 @@ impl Editor {
     if event.modifiers.shift {
       self.select_to(offset, cx);
     } else {
-      self.move_to(offset, cx);
+      match event.click_count {
+        1 => {
+          self.move_to(offset, cx);
+        }
+        2 => {
+          let (word_start, word_end) = word_range_at_offset(self, offset, cx);
+          self.selected_range = word_start..word_end;
+          self.selection_reversed = false;
+          cx.notify();
+        }
+        3 => {
+          let (line_start, line_end) = line_range_at_offset(self, offset, cx);
+          self.selected_range = line_start..line_end;
+          self.selection_reversed = false;
+          cx.notify();
+        }
+        _ => {
+          let doc_len = document.len();
+          self.selected_range = 0..doc_len;
+          self.selection_reversed = false;
+          cx.notify();
+        }
+      }
     }
   }
 
@@ -1325,5 +1348,26 @@ pub mod tests {
       assert!(doc.len() > 0);
       assert!(doc.len_lines() > 0);
     });
+  }
+
+  #[gpui::test]
+  fn test_quadruple_click_selects_all(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3");
+
+    let doc_len = ctx
+      .editor
+      .read_with(&ctx.cx, |editor, cx| editor.document().read(cx).len());
+
+    // Simulate quadruple click - select all buffer
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      editor.is_selecting = true;
+      editor.selected_range = 0..doc_len;
+      editor.selection_reversed = false;
+      cx.notify();
+    });
+
+    // Verify entire buffer is selected
+    assert_eq!(ctx.selection(), 0..doc_len);
+    assert_eq!(doc_len, 17); // "line1\nline2\nline3"
   }
 }

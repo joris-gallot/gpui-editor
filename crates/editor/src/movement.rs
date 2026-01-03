@@ -158,6 +158,67 @@ pub fn next_word_boundary(editor: &Editor, offset: usize, cx: &Context<Editor>) 
   end
 }
 
+/// Find the word boundaries at the given offset (for double-click selection)
+pub fn word_range_at_offset(
+  editor: &Editor,
+  offset: usize,
+  cx: &Context<Editor>,
+) -> (usize, usize) {
+  let doc = editor.document.read(cx);
+  let doc_len = doc.len();
+
+  if offset >= doc_len {
+    return (doc_len, doc_len);
+  }
+
+  // Get a slice around the offset
+  let start = offset.saturating_sub(500);
+  let end = (offset + 500).min(doc_len);
+  let slice = doc.slice_to_string(start..end);
+  let relative_offset = offset - start;
+
+  // Find the segment containing the cursor
+  for (idx, segment) in slice.split_word_bound_indices() {
+    let segment_end = idx + segment.len();
+
+    // Skip whitespace-only segments
+    if segment.trim().is_empty() {
+      continue;
+    }
+
+    // Check if cursor is within this segment
+    if idx <= relative_offset && relative_offset < segment_end {
+      return (start + idx, start + segment_end);
+    }
+  }
+
+  // If no word found, return the offset itself
+  (offset, offset)
+}
+
+/// Find the line boundaries at the given offset (for triple-click selection)
+pub fn line_range_at_offset(
+  editor: &Editor,
+  offset: usize,
+  cx: &Context<Editor>,
+) -> (usize, usize) {
+  let doc = editor.document.read(cx);
+  let doc_len = doc.len();
+
+  if doc_len == 0 {
+    return (0, 0);
+  }
+
+  let line_idx = doc.char_to_line(offset.min(doc_len));
+
+  if let Some(line_range) = doc.line_range(line_idx) {
+    // Return the full line range including the newline
+    (line_range.start, line_range.end)
+  } else {
+    (offset, offset)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -475,11 +536,104 @@ mod tests {
 
   #[gpui::test]
   fn test_next_boundary_at_end(cx: &mut TestAppContext) {
-    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello");
-
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "test");
     let boundary = ctx
       .editor
-      .update(&mut ctx.cx, |editor, cx| next_boundary(editor, 5, cx));
-    assert_eq!(boundary, 5);
+      .update(&mut ctx.cx, |editor, cx| next_boundary(editor, 4, cx));
+    assert_eq!(boundary, 4);
+  }
+
+  #[gpui::test]
+  fn test_word_range_at_offset_simple(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello world");
+
+    // Click in middle of "hello"
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      word_range_at_offset(editor, 2, cx)
+    });
+    assert_eq!((start, end), (0, 5));
+
+    // Click in middle of "world"
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      word_range_at_offset(editor, 8, cx)
+    });
+    assert_eq!((start, end), (6, 11));
+  }
+
+  #[gpui::test]
+  fn test_word_range_at_offset_with_punctuation(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "RGB(u8, u8, u8)");
+
+    // Click on "RGB"
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      word_range_at_offset(editor, 1, cx)
+    });
+    assert_eq!((start, end), (0, 3));
+
+    // Click on "u8" (first one)
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      word_range_at_offset(editor, 5, cx)
+    });
+    assert_eq!((start, end), (4, 6));
+
+    // Click on punctuation "("
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      word_range_at_offset(editor, 3, cx)
+    });
+    assert_eq!((start, end), (3, 4));
+  }
+
+  #[gpui::test]
+  fn test_word_range_at_offset_whitespace(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "hello   world");
+
+    // Click on whitespace - should return same position
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      word_range_at_offset(editor, 6, cx)
+    });
+    assert_eq!((start, end), (6, 6));
+  }
+
+  #[gpui::test]
+  fn test_line_range_at_offset_simple(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "line1\nline2\nline3");
+
+    // Click on first line
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      line_range_at_offset(editor, 2, cx)
+    });
+    assert_eq!((start, end), (0, 6)); // Includes newline
+
+    // Click on second line
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      line_range_at_offset(editor, 8, cx)
+    });
+    assert_eq!((start, end), (6, 12)); // Includes newline
+
+    // Click on third line (no trailing newline)
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      line_range_at_offset(editor, 14, cx)
+    });
+    assert_eq!((start, end), (12, 17));
+  }
+
+  #[gpui::test]
+  fn test_line_range_at_offset_empty_doc(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "");
+
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      line_range_at_offset(editor, 0, cx)
+    });
+    assert_eq!((start, end), (0, 0));
+  }
+
+  #[gpui::test]
+  fn test_line_range_at_offset_single_line(cx: &mut TestAppContext) {
+    let mut ctx = EditorTestContext::with_text(cx.clone(), "single line");
+
+    let (start, end) = ctx.editor.update(&mut ctx.cx, |editor, cx| {
+      line_range_at_offset(editor, 5, cx)
+    });
+    assert_eq!((start, end), (0, 11));
   }
 }
