@@ -379,7 +379,6 @@ impl Element for EditorElement {
           let x_end = shaped.x_for_index(sel_line_end);
           let y = bounds.top() + line_height * (line_idx - viewport.start) as f32;
 
-          // TODO: Improve visual for newline selection
           // If selection is empty on this line (selecting just the newline),
           // Only add width if we're actually selecting the newline character
           let is_selecting_newline = sel_line_end > sel_line_start && x_start == x_end;
