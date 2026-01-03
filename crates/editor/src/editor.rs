@@ -253,7 +253,7 @@ impl Editor {
       // Note: scroll_x is negative when scrolled right (0 = left edge, -100 = scrolled 100px right)
       // visible area in absolute coordinates: [-current_scroll_x, -current_scroll_x + viewport_width]
       let visible_start_x = -current_scroll_x;
-      let visible_end_x = -current_scroll_x + self.viewport_width - px(70.0);
+      let visible_end_x = -current_scroll_x + self.viewport_width;
 
       // Check if cursor is too far left
       if cursor_x < visible_start_x + horizontal_padding {

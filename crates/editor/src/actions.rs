@@ -423,7 +423,7 @@ pub fn select_left(editor: &mut Editor, _: &SelectLeft, _: &mut Window, cx: &mut
 pub fn select_word_left(
   editor: &mut Editor,
   _: &SelectWordLeft,
-  _: &mut Window,
+  window: &mut Window,
   cx: &mut Context<Editor>,
 ) {
   editor.target_column = None;
@@ -431,12 +431,13 @@ pub fn select_word_left(
     boundaries::previous_word_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn select_right(
   editor: &mut Editor,
   _: &SelectRight,
-  _: &mut Window,
+  window: &mut Window,
   cx: &mut Context<Editor>,
 ) {
   editor.target_column = None;
@@ -444,12 +445,13 @@ pub fn select_right(
     boundaries::next_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn select_word_right(
   editor: &mut Editor,
   _: &SelectWordRight,
-  _: &mut Window,
+  window: &mut Window,
   cx: &mut Context<Editor>,
 ) {
   editor.target_column = None;
@@ -457,12 +459,13 @@ pub fn select_word_right(
     boundaries::next_word_boundary(editor, editor.cursor_offset(), cx),
     cx,
   );
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn select_cmd_left(
   editor: &mut Editor,
   _: &SelectCmdLeft,
-  _: &mut Window,
+  window: &mut Window,
   cx: &mut Context<Editor>,
 ) {
   let document = editor.document.read(cx);
@@ -470,12 +473,13 @@ pub fn select_cmd_left(
   let line = document.char_to_line(cursor);
   let line_start = document.line_to_char(line);
   editor.select_to(line_start, cx);
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn select_cmd_right(
   editor: &mut Editor,
   _: &SelectCmdRight,
-  _: &mut Window,
+  window: &mut Window,
   cx: &mut Context<Editor>,
 ) {
   let document = editor.document.read(cx);
@@ -485,6 +489,7 @@ pub fn select_cmd_right(
   let line_content = document.line_content(line).unwrap_or_default();
   let line_end = line_range.start + line_content.len();
   editor.select_to(line_end, cx);
+  editor.ensure_cursor_visible(window, cx);
 }
 
 pub fn select_cmd_up(
