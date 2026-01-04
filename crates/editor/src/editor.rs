@@ -34,6 +34,8 @@ const DEFAULT_VIEWPORT_HEIGHT: f32 = 800.0;
 const DEFAULT_VIEWPORT_WIDTH: f32 = 1200.0;
 /// Default maximum line width
 pub const DEFAULT_MAX_LINE_WIDTH: f32 = 800.0;
+/// Extra width added to editor content for horizontal scrolling
+const EXTRA_EDITOR_WIDTH: f32 = 200.0;
 /// Maximum number of cached shaped lines
 const MAX_CACHE_SIZE: usize = 200;
 /// Number of lines of padding when auto-scrolling to cursor
@@ -247,7 +249,7 @@ impl Editor {
       let cursor_in_line = cursor_offset - line_start;
       let cursor_x = shaped_line.x_for_index(cursor_in_line);
 
-      let horizontal_padding = px(GUTTER_WIDTH) + px(EDITOR_PADDING) + px(100.0); // Extra padding for horizontal scrolling
+      let horizontal_padding = px(GUTTER_WIDTH) + px(EDITOR_PADDING) + px(EXTRA_EDITOR_WIDTH);
       let current_scroll_x = self.scroll_handle.offset().x;
 
       // Note: scroll_x is negative when scrolled right (0 = left edge, -100 = scrolled 100px right)
@@ -652,7 +654,7 @@ impl Render for Editor {
           .px(px(EDITOR_PADDING))
           .child(
             div()
-              .min_w(self.max_line_width)
+              .min_w(self.max_line_width + px(EXTRA_EDITOR_WIDTH))
               .h_full()
               .child(EditorElement::new(cx.entity().clone())),
           ),
