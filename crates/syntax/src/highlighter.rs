@@ -69,13 +69,13 @@ impl SyntaxHighlighter {
     for event in events {
       match event.map_err(|e| format!("Event error: {}", e))? {
         HighlightEvent::Source { start, end } => {
-          if let Some(&highlight_idx) = highlight_stack.last() {
-            if !on_span(HighlightSpan {
+          if let Some(&highlight_idx) = highlight_stack.last()
+            && !on_span(HighlightSpan {
               byte_range: start..end,
               token_type: map_highlight_index_to_token_type(highlight_idx),
-            }) {
-              return Ok(());
-            }
+            })
+          {
+            return Ok(());
           }
           if !on_source(start..end) {
             return Ok(());

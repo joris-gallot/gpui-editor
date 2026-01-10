@@ -532,8 +532,9 @@ impl HighlightStreamState {
     let end_offset = span.byte_range.end.saturating_sub(1);
     let end_line = line_index_for_byte(line_starts, end_offset);
 
-    for line_idx in start_line..=end_line {
-      let (line_start, line_end) = line_bounds[line_idx];
+    let lines = &line_bounds[start_line..=end_line];
+    for (offset, &(line_start, line_end)) in lines.iter().enumerate() {
+      let line_idx = start_line + offset;
       let local_start = span.byte_range.start.max(line_start) - line_start;
       let local_end = span.byte_range.end.min(line_end) - line_start;
       if local_end > local_start {
