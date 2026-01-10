@@ -33,6 +33,30 @@ impl SyntaxHighlighter {
   /// Highlight complete text
   /// Returns Ok(highlights) or Err if parsing fails
   pub fn highlight_text(&mut self, text: &str) -> Result<Vec<HighlightSpan>, String> {
+    let mut highlights = Vec::new();
+    self.highlight_text_stream(
+      text,
+      |_| true,
+      |span| {
+        highlights.push(span);
+        true
+      },
+    )?;
+    Ok(highlights)
+  }
+
+  /// Stream highlight events for incremental processing.
+  /// Return `false` from callbacks to cancel early.
+  pub fn highlight_text_stream<F, G>(
+    &mut self,
+    text: &str,
+    mut on_source: F,
+    mut on_span: G,
+  ) -> Result<(), String>
+  where
+    F: FnMut(Range<usize>) -> bool,
+    G: FnMut(HighlightSpan) -> bool,
+  {
     let events = self
       .highlighter
       .highlight(&self.config.highlight_config, text.as_bytes(), None, |_| {
@@ -40,17 +64,21 @@ impl SyntaxHighlighter {
       })
       .map_err(|e| format!("Highlight failed: {}", e))?;
 
-    let mut highlights = Vec::new();
     let mut highlight_stack = Vec::new();
 
     for event in events {
       match event.map_err(|e| format!("Event error: {}", e))? {
         HighlightEvent::Source { start, end } => {
           if let Some(&highlight_idx) = highlight_stack.last() {
-            highlights.push(HighlightSpan {
+            if !on_span(HighlightSpan {
               byte_range: start..end,
               token_type: map_highlight_index_to_token_type(highlight_idx),
-            });
+            }) {
+              return Ok(());
+            }
+          }
+          if !on_source(start..end) {
+            return Ok(());
           }
         }
         HighlightEvent::HighlightStart(idx) => {
@@ -62,7 +90,7 @@ impl SyntaxHighlighter {
       }
     }
 
-    Ok(highlights)
+    Ok(())
   }
 }
 

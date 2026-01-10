@@ -66,24 +66,18 @@ pub(crate) fn highlights_to_text_runs(
   line_text: &str,
   theme: &Theme,
   base_style: &TextStyle,
-  line_start_offset: usize,
 ) -> Vec<TextRun> {
   let mut runs = Vec::new();
   let line_len = line_text.len();
-  let line_range = line_start_offset..(line_start_offset + line_len);
   let mut current_pos = 0;
 
   // Filter and clip highlights for this line
   let mut line_highlights: Vec<_> = highlights
     .iter()
     .filter_map(|h| {
-      if h.byte_range.start < line_range.end && h.byte_range.end > line_range.start {
-        let start = h.byte_range.start.max(line_range.start) - line_range.start;
-        let end = h.byte_range.end.min(line_range.end) - line_range.start;
-        Some((start..end, h.token_type))
-      } else {
-        None
-      }
+      let start = h.byte_range.start.min(line_len);
+      let end = h.byte_range.end.min(line_len);
+      (end > start).then_some((start..end, h.token_type))
     })
     .collect();
 
@@ -208,20 +202,25 @@ impl Element for EditorElement {
     cx: &mut App,
   ) -> Self::PrepaintState {
     // Check if syntax highlights have been updated and invalidate cache if needed
-    let highlights_version = *self
-      .editor
-      .read(cx)
-      .document()
-      .read(cx)
-      .highlights_version
-      .read();
+    let (highlights_epoch, highlights_version, dirty_highlight_lines) = {
+      let document = self.editor.read(cx).document().read(cx);
+      let epoch = *document.highlights_epoch.read();
+      let version = *document.highlights_version.read();
+      let dirty = document.drain_dirty_highlight_lines();
+      (epoch, version, dirty)
+    };
     self.editor.update(cx, |editor, _| {
       editor.viewport_height = bounds.size.height;
       editor.viewport_width = window.bounds().size.width;
 
-      // If highlights have been updated since last render, invalidate the cache
-      if highlights_version > editor.last_highlights_version {
+      if highlights_epoch > editor.last_highlights_epoch {
         editor.line_layouts.clear();
+        editor.last_highlights_epoch = highlights_epoch;
+        editor.last_highlights_version = highlights_version;
+      } else if highlights_version > editor.last_highlights_version {
+        for line_idx in &dirty_highlight_lines {
+          editor.line_layouts.remove(line_idx);
+        }
         editor.last_highlights_version = highlights_version;
       }
     });
@@ -277,13 +276,9 @@ impl Element for EditorElement {
     for (line_idx, line_content) in lines_to_shape {
       // Try to get syntax highlights for this line
       let document = self.editor.read(cx).document().read(cx);
-      let line_range = document.line_range(line_idx);
-
-      let runs = if let (Some(highlights), Some(range)) =
-        (document.get_highlights_for_line(line_idx), line_range)
-      {
+      let runs = if let Some(highlights) = document.get_highlights_for_line(line_idx) {
         // Render with syntax highlighting colors
-        highlights_to_text_runs(&highlights, &line_content, &theme, &style, range.start)
+        highlights_to_text_runs(highlights.as_ref(), &line_content, &theme, &style)
       } else {
         // Fallback: plain text rendering (progressive rendering!)
         vec![TextRun {
@@ -482,7 +477,7 @@ impl Element for EditorElement {
     // Handle mouse wheel scroll
     window.on_mouse_event({
       let editor = self.editor.clone();
-      move |event: &ScrollWheelEvent, phase, _window, cx| {
+      move |event: &ScrollWheelEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble {
           editor.update(cx, |editor, cx| {
             let document = editor.document().read(cx);
@@ -500,6 +495,15 @@ impl Element for EditorElement {
               .min((total_lines.saturating_sub(1)) as f32);
 
             editor.scroll_offset_y = new_scroll;
+            let viewport = editor.viewport_range(window.line_height(), total_lines);
+            editor.document.update(cx, |doc, cx| {
+              doc.schedule_viewport_highlights(
+                viewport,
+                None,
+                crate::document::VIEWPORT_HIGHLIGHT_MARGIN_LINES,
+                cx,
+              );
+            });
             cx.notify();
           });
         }

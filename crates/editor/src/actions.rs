@@ -3,8 +3,6 @@
 //! This module contains all the action handlers for the editor,
 //! including text editing, cursor movement, and selection operations.
 
-use std::time::Instant;
-
 use gpui::{ClipboardItem, Context, EntityInputHandler, Window, actions};
 
 use crate::{boundaries, editor::Editor};
@@ -52,24 +50,7 @@ actions!(
 
 pub fn enter(editor: &mut Editor, _: &Enter, window: &mut Window, cx: &mut Context<Editor>) {
   editor.target_column = None;
-  let cursor = editor.cursor_offset();
-  let current_line = editor.document.read(cx).char_to_line(cursor);
-  let selection_before = editor.selected_range.clone();
-
-  let transaction_id = editor.document.update(cx, |doc, cx| {
-    let id = doc.buffer.transaction(Instant::now(), |buffer, tx| {
-      buffer.insert(tx, cursor, "\n");
-    });
-    cx.notify();
-    id
-  });
-
-  editor.move_to(cursor + 1, cx);
-  let selection_after = editor.selected_range.clone();
-
-  editor.record_transaction(transaction_id, selection_before, selection_after);
-
-  editor.invalidate_lines_from(current_line);
+  editor.replace_text_in_range(None, "\n", window, cx);
 
   editor.ensure_cursor_visible(window, cx);
 }

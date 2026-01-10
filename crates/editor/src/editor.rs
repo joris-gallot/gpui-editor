@@ -75,6 +75,7 @@ pub struct Editor {
 
   // Track syntax highlighting version to invalidate cache when highlights change
   pub last_highlights_version: usize,
+  pub last_highlights_epoch: usize,
 
   // Cursor blinking
   pub cursor_blink: Entity<CursorBlink>,
@@ -179,6 +180,7 @@ impl Editor {
       redo_stack: VecDeque::new(),
       theme: Theme::dark(),
       last_highlights_version: 0,
+      last_highlights_epoch: 0,
       cursor_blink,
     }
   }
@@ -214,6 +216,13 @@ impl Editor {
         .line_layouts
         .retain(|&line_idx, _| line_idx >= viewport_start && line_idx < viewport_end);
     }
+  }
+
+  pub(crate) fn viewport_range(&self, line_height: Pixels, total_lines: usize) -> Range<usize> {
+    let visible_line_count = ((self.viewport_height / line_height).ceil() as usize).max(1);
+    let start_line = (self.scroll_offset_y.floor() as usize).min(total_lines.saturating_sub(1));
+    let end_line = (start_line + visible_line_count).min(total_lines);
+    start_line..end_line
   }
 
   pub(crate) fn ensure_cursor_visible(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -478,7 +487,7 @@ impl EntityInputHandler for Editor {
     &mut self,
     range_utf16: Option<Range<usize>>,
     new_text: &str,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Self>,
   ) {
     // Pause cursor blinking when typing
@@ -495,6 +504,13 @@ impl EntityInputHandler for Editor {
     let start_line = self.document.read(cx).char_to_line(range.start);
     let end_line = self.document.read(cx).char_to_line(range.end);
 
+    let line_height = window.line_height();
+    let viewport_height = self.viewport_height;
+    let scroll_offset_y = self.scroll_offset_y;
+    let new_line_count = new_text.matches('\n').count();
+    let force_end_line = start_line.saturating_add(new_line_count).max(end_line);
+    let force_range = start_line..(force_end_line + 1);
+
     let transaction_id = self.document.update(cx, |doc, cx| {
       let id = doc.buffer.transaction(Instant::now(), |buffer, tx| {
         buffer.replace(tx, range.clone(), new_text);
@@ -502,6 +518,17 @@ impl EntityInputHandler for Editor {
 
       // Trigger async syntax re-highlighting with debouncing
       doc.schedule_recompute_highlights(cx);
+      let total_lines = doc.len_lines();
+      let visible_line_count = ((viewport_height / line_height).ceil() as usize).max(1);
+      let start_line = (scroll_offset_y.floor() as usize).min(total_lines.saturating_sub(1));
+      let end_line = (start_line + visible_line_count).min(total_lines);
+      let viewport = start_line..end_line;
+      doc.schedule_viewport_highlights(
+        viewport,
+        Some(force_range.clone()),
+        crate::document::VIEWPORT_HIGHLIGHT_MARGIN_LINES,
+        cx,
+      );
 
       cx.notify();
       id
@@ -532,7 +559,7 @@ impl EntityInputHandler for Editor {
     range_utf16: Option<Range<usize>>,
     new_text: &str,
     new_selected_range_utf16: Option<Range<usize>>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Self>,
   ) {
     // Pause cursor blinking when typing
@@ -547,8 +574,28 @@ impl EntityInputHandler for Editor {
 
     let start_line = self.document.read(cx).char_to_line(range.start);
 
+    let line_height = window.line_height();
+    let viewport_height = self.viewport_height;
+    let scroll_offset_y = self.scroll_offset_y;
+    let end_line = self.document.read(cx).char_to_line(range.end);
+    let new_line_count = new_text.matches('\n').count();
+    let force_end_line = start_line.saturating_add(new_line_count).max(end_line);
+    let force_range = start_line..(force_end_line + 1);
+
     self.document.update(cx, |doc, cx| {
       doc.replace(range.clone(), new_text, cx);
+      doc.schedule_recompute_highlights(cx);
+      let total_lines = doc.len_lines();
+      let visible_line_count = ((viewport_height / line_height).ceil() as usize).max(1);
+      let start_line = (scroll_offset_y.floor() as usize).min(total_lines.saturating_sub(1));
+      let end_line = (start_line + visible_line_count).min(total_lines);
+      let viewport = start_line..end_line;
+      doc.schedule_viewport_highlights(
+        viewport,
+        Some(force_range.clone()),
+        crate::document::VIEWPORT_HIGHLIGHT_MARGIN_LINES,
+        cx,
+      );
     });
 
     // Invalidate cache for all lines from the start of the edit
@@ -704,6 +751,7 @@ pub mod tests {
           redo_stack: VecDeque::new(),
           theme: Theme::dark(),
           last_highlights_version: 0,
+          last_highlights_epoch: 0,
           cursor_blink,
         }
       });

@@ -1,25 +1,48 @@
 use buffer::TextBuffer;
 use gpui::{Context, Task};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::{
   borrow::Cow,
+  cell::RefCell,
+  collections::VecDeque,
   ops::Range,
-  sync::Arc,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+  },
   time::{Duration, Instant},
 };
 use syntax::languages;
 use syntax::{HighlightSpan, SyntaxHighlighter};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum HighlightQuality {
+  Viewport = 1,
+  Full = 2,
+}
+
+struct LineHighlight {
+  spans: Arc<[HighlightSpan]>,
+  quality: HighlightQuality,
+}
 
 pub struct Document {
   pub buffer: TextBuffer,
 
   // Syntax highlighting support
   highlighter: Option<SyntaxHighlighter>,
-  highlights: Arc<RwLock<Vec<HighlightSpan>>>,
+  // Line-local highlight cache (None = not computed yet)
+  highlights: Arc<RwLock<Vec<Option<LineHighlight>>>>,
   pending_highlight_task: Option<Task<()>>,
+  pending_viewport_highlight_task: Option<Task<()>>,
 
   // Flag to track when highlights have been updated (for cache invalidation)
   pub highlights_version: Arc<RwLock<usize>>,
+  // Track highlight generations to invalidate stale caches on re-run
+  pub highlights_epoch: Arc<RwLock<usize>>,
+  dirty_highlight_lines: Arc<RwLock<Vec<usize>>>,
+  highlight_generation: Arc<AtomicUsize>,
+  viewport_highlight_generation: Arc<AtomicUsize>,
 }
 
 impl Document {
@@ -36,7 +59,12 @@ impl Document {
       highlighter,
       highlights: Arc::new(RwLock::new(Vec::new())),
       pending_highlight_task: None,
+      pending_viewport_highlight_task: None,
       highlights_version: Arc::new(RwLock::new(0)),
+      highlights_epoch: Arc::new(RwLock::new(0)),
+      dirty_highlight_lines: Arc::new(RwLock::new(Vec::new())),
+      highlight_generation: Arc::new(AtomicUsize::new(0)),
+      viewport_highlight_generation: Arc::new(AtomicUsize::new(0)),
     };
 
     // Schedule initial highlighting
@@ -127,78 +155,469 @@ impl Document {
   }
 
   /// Get syntax highlights for a specific line
-  pub fn get_highlights_for_line(&self, line_idx: usize) -> Option<Vec<HighlightSpan>> {
+  pub fn get_highlights_for_line(&self, line_idx: usize) -> Option<Arc<[HighlightSpan]>> {
     let highlights = self.highlights.read();
-    let line_range = self.line_range(line_idx)?;
-
-    // Filter highlights that intersect this line
-    let line_highlights: Vec<_> = highlights
-      .iter()
-      .filter(|h| h.byte_range.start < line_range.end && h.byte_range.end > line_range.start)
-      .cloned()
-      .collect();
-
-    if line_highlights.is_empty() {
-      None
-    } else {
-      Some(line_highlights)
+    if line_idx >= highlights.len() {
+      return None;
     }
+    highlights
+      .get(line_idx)?
+      .as_ref()
+      .map(|entry| Arc::clone(&entry.spans))
+  }
+
+  pub fn drain_dirty_highlight_lines(&self) -> Vec<usize> {
+    let mut dirty = self.dirty_highlight_lines.write();
+    if dirty.is_empty() {
+      Vec::new()
+    } else {
+      dirty.drain(..).collect()
+    }
+  }
+
+  /// Schedule viewport-only highlight for responsive feedback.
+  pub fn schedule_viewport_highlights(
+    &mut self,
+    viewport: Range<usize>,
+    force_range: Option<Range<usize>>,
+    margin_lines: usize,
+    cx: &mut Context<Self>,
+  ) {
+    self.pending_viewport_highlight_task = None;
+
+    let Some(ref mut highlighter) = self.highlighter else {
+      return;
+    };
+
+    let line_count = self.buffer.len_lines();
+    if line_count == 0 {
+      return;
+    }
+
+    let start_line = viewport.start.saturating_sub(margin_lines);
+    let end_line = (viewport.end + margin_lines).min(line_count);
+    if start_line >= end_line {
+      return;
+    }
+
+    let text = build_viewport_text(&self.buffer, start_line, end_line);
+    let config = highlighter.config;
+    let highlights_cache = self.highlights.clone();
+    let dirty_highlight_lines = self.dirty_highlight_lines.clone();
+    let highlights_version = self.highlights_version.clone();
+    let viewport_highlight_generation = self.viewport_highlight_generation.clone();
+    let my_generation = viewport_highlight_generation.fetch_add(1, Ordering::Relaxed) + 1;
+
+    let task = cx.spawn(async move |this, cx| {
+      let result = cx
+        .background_executor()
+        .spawn(async move { highlight_text_to_line_spans(&text, config) })
+        .await;
+
+      if viewport_highlight_generation.load(Ordering::Relaxed) != my_generation {
+        return;
+      }
+
+      match result {
+        Ok(line_spans) => {
+          let _ = this.update(cx, |_doc, cx| {
+            let mut highlights = highlights_cache.write();
+            if highlights.len() < line_count {
+              highlights.resize_with(line_count, || None);
+            }
+
+            let mut dirty_lines = dirty_highlight_lines.write();
+            let mut updated = false;
+
+            for (offset, spans) in line_spans.into_iter().enumerate() {
+              let line_idx = start_line + offset;
+              if line_idx >= highlights.len() {
+                break;
+              }
+
+              let replace = match highlights[line_idx].as_ref() {
+                None => true,
+                Some(existing) => {
+                  if let Some(force_range) = force_range.as_ref() {
+                    force_range.contains(&line_idx) || existing.quality != HighlightQuality::Full
+                  } else {
+                    existing.quality != HighlightQuality::Full
+                  }
+                }
+              };
+
+              if replace {
+                highlights[line_idx] = Some(LineHighlight {
+                  spans,
+                  quality: HighlightQuality::Viewport,
+                });
+                dirty_lines.push(line_idx);
+                updated = true;
+              }
+            }
+
+            if updated {
+              *highlights_version.write() += 1;
+              cx.notify();
+            }
+          });
+        }
+        Err(err) => {
+          eprintln!("Viewport highlighting failed: {}", err);
+        }
+      }
+    });
+
+    self.pending_viewport_highlight_task = Some(task);
   }
 
   /// Schedule async re-highlighting with debouncing
   pub fn schedule_recompute_highlights(&mut self, cx: &mut Context<Self>) {
     // Cancel previous task
     self.pending_highlight_task = None;
+    self.pending_viewport_highlight_task = None;
+    self
+      .viewport_highlight_generation
+      .fetch_add(1, Ordering::Relaxed);
 
     let Some(ref mut highlighter) = self.highlighter else {
       return;
     };
 
     let text = self.buffer.slice_to_string(0..self.buffer.len());
+    let line_count = self.buffer.len_lines();
     let highlights_cache = self.highlights.clone();
     let highlights_version = self.highlights_version.clone();
+    let dirty_highlight_lines = self.dirty_highlight_lines.clone();
+    let highlight_generation = self.highlight_generation.clone();
 
     // Clone highlighter config for background work
     let config = highlighter.config;
+    let my_generation = highlight_generation.fetch_add(1, Ordering::Relaxed) + 1;
+
+    {
+      let mut highlights = highlights_cache.write();
+      if highlights.len() < line_count {
+        highlights.resize_with(line_count, || None);
+      } else if highlights.len() > line_count {
+        highlights.truncate(line_count);
+      }
+    }
+    dirty_highlight_lines.write().clear();
 
     let task = cx.spawn(async move |this, cx| {
       // Debounce: wait 150ms
       cx.background_executor()
-        .timer(Duration::from_millis(150))
+        .timer(Duration::from_millis(HIGHLIGHT_DEBOUNCE_MS))
         .await;
 
-      // Highlighting in background
-      let result = cx
-        .background_executor()
-        .spawn(async move {
-          let mut bg_highlighter = SyntaxHighlighter::new(config);
-          bg_highlighter.highlight_text(&text)
-        })
-        .await;
+      let batches = Arc::new(Mutex::new(VecDeque::new()));
+      let done = Arc::new(AtomicBool::new(false));
+      let error = Arc::new(Mutex::new(None));
 
-      // Update cache
-      match result {
-        Ok(highlights) => {
-          *highlights_cache.write() = highlights;
+      let worker_batches = batches.clone();
+      let worker_done = done.clone();
+      let worker_error = error.clone();
+      let worker_generation = highlight_generation.clone();
 
-          // Increment version to signal that highlights have been updated
-          *highlights_version.write() += 1;
+      let _background_task = cx.background_executor().spawn(async move {
+        let result = stream_highlights(
+          text,
+          config,
+          worker_batches,
+          worker_generation,
+          my_generation,
+        );
+        if let Err(err) = result {
+          *worker_error.lock() = Some(err);
+        }
+        worker_done.store(true, Ordering::Release);
+      });
 
-          // Notify UI to re-render
+      loop {
+        if highlight_generation.load(Ordering::Relaxed) != my_generation {
+          break;
+        }
+
+        let mut pending = Vec::new();
+        {
+          let mut queue = batches.lock();
+          while let Some(batch) = queue.pop_front() {
+            pending.push(batch);
+          }
+        }
+
+        if !pending.is_empty() {
           let _ = this.update(cx, |_doc, cx| {
-            cx.notify();
+            let mut highlights = highlights_cache.write();
+            let mut dirty_lines = dirty_highlight_lines.write();
+            let mut updated = false;
+
+            for batch in pending {
+              for (offset, line_highlights) in batch.lines.into_iter().enumerate() {
+                let line_idx = batch.start_line + offset;
+                if line_idx < highlights.len() {
+                  highlights[line_idx] = Some(LineHighlight {
+                    spans: line_highlights,
+                    quality: HighlightQuality::Full,
+                  });
+                  dirty_lines.push(line_idx);
+                  updated = true;
+                }
+              }
+            }
+
+            if updated {
+              *highlights_version.write() += 1;
+              cx.notify();
+            }
           });
         }
-        Err(e) => {
-          eprintln!("Syntax highlighting failed: {}", e);
-          // Fallback: clear cache so we show plain text
-          highlights_cache.write().clear();
+
+        if done.load(Ordering::Acquire) {
+          if let Some(err) = error.lock().take() {
+            eprintln!("Syntax highlighting failed: {}", err);
+            let _ = this.update(cx, |_doc, cx| {
+              let mut highlights = highlights_cache.write();
+              let mut dirty_lines = dirty_highlight_lines.write();
+              for (line_idx, slot) in highlights.iter_mut().enumerate() {
+                *slot = None;
+                dirty_lines.push(line_idx);
+              }
+              *highlights_version.write() += 1;
+              cx.notify();
+            });
+          }
+          break;
         }
+
+        cx.background_executor()
+          .timer(Duration::from_millis(HIGHLIGHT_POLL_INTERVAL_MS))
+          .await;
       }
     });
 
     self.pending_highlight_task = Some(task);
   }
+}
+
+const HIGHLIGHT_DEBOUNCE_MS: u64 = 150;
+const HIGHLIGHT_BATCH_LINES: usize = 200;
+const HIGHLIGHT_POLL_INTERVAL_MS: u64 = 16;
+pub(crate) const VIEWPORT_HIGHLIGHT_MARGIN_LINES: usize = 100;
+
+fn build_viewport_text(buffer: &TextBuffer, start_line: usize, end_line: usize) -> String {
+  let mut text = String::new();
+  for line_idx in start_line..end_line {
+    if line_idx > start_line {
+      text.push('\n');
+    }
+    if let Some(content) = buffer.line_content(line_idx) {
+      text.push_str(&content);
+    }
+  }
+  text
+}
+
+fn highlight_text_to_line_spans(
+  text: &str,
+  config: &'static syntax::LanguageConfig,
+) -> Result<Vec<Arc<[HighlightSpan]>>, String> {
+  let line_bounds = compute_line_bounds(text);
+  let line_starts: Vec<usize> = line_bounds.iter().map(|(start, _)| *start).collect();
+  let mut line_spans: Vec<Vec<HighlightSpan>> = vec![Vec::new(); line_bounds.len()];
+
+  let mut highlighter = SyntaxHighlighter::new(config);
+  highlighter.highlight_text_stream(
+    text,
+    |_| true,
+    |span| {
+      let start_line = line_index_for_byte(&line_starts, span.byte_range.start);
+      let end_offset = span.byte_range.end.saturating_sub(1);
+      let end_line = line_index_for_byte(&line_starts, end_offset);
+
+      for line_idx in start_line..=end_line {
+        let (line_start, line_end) = line_bounds[line_idx];
+        let local_start = span.byte_range.start.max(line_start) - line_start;
+        let local_end = span.byte_range.end.min(line_end) - line_start;
+        if local_end > local_start {
+          line_spans[line_idx].push(HighlightSpan {
+            byte_range: local_start..local_end,
+            token_type: span.token_type,
+          });
+        }
+      }
+      true
+    },
+  )?;
+
+  Ok(line_spans.into_iter().map(Arc::from).collect())
+}
+
+struct HighlightBatch {
+  start_line: usize,
+  lines: Vec<Arc<[HighlightSpan]>>,
+}
+
+fn stream_highlights(
+  text: String,
+  config: &'static syntax::LanguageConfig,
+  batches: Arc<Mutex<VecDeque<HighlightBatch>>>,
+  highlight_generation: Arc<AtomicUsize>,
+  my_generation: usize,
+) -> Result<(), String> {
+  let line_bounds = compute_line_bounds(&text);
+  let line_starts: Vec<usize> = line_bounds.iter().map(|(start, _)| *start).collect();
+  let line_ends: Vec<usize> = line_bounds.iter().map(|(_, end)| *end).collect();
+  let line_count = line_bounds.len();
+  let state = RefCell::new(HighlightStreamState::new(line_count));
+
+  let mut highlighter = SyntaxHighlighter::new(config);
+  let cancel = |generation: &Arc<AtomicUsize>| generation.load(Ordering::Relaxed) != my_generation;
+
+  highlighter.highlight_text_stream(
+    &text,
+    |range| {
+      if cancel(&highlight_generation) {
+        return false;
+      }
+      state
+        .borrow_mut()
+        .flush_ready(range.end, &line_ends, &batches);
+      true
+    },
+    |span| {
+      if cancel(&highlight_generation) {
+        return false;
+      }
+      state
+        .borrow_mut()
+        .push_span(&line_bounds, &line_starts, span);
+      true
+    },
+  )?;
+
+  if !cancel(&highlight_generation) {
+    state
+      .borrow_mut()
+      .flush_ready(usize::MAX, &line_ends, &batches);
+  }
+
+  Ok(())
+}
+
+struct HighlightStreamState {
+  line_spans: Vec<Vec<HighlightSpan>>,
+  next_flush_line: usize,
+}
+
+impl HighlightStreamState {
+  fn new(line_count: usize) -> Self {
+    Self {
+      line_spans: vec![Vec::new(); line_count],
+      next_flush_line: 0,
+    }
+  }
+
+  fn push_span(
+    &mut self,
+    line_bounds: &[(usize, usize)],
+    line_starts: &[usize],
+    span: HighlightSpan,
+  ) {
+    if line_bounds.is_empty() {
+      return;
+    }
+    let start_line = line_index_for_byte(line_starts, span.byte_range.start);
+    let end_offset = span.byte_range.end.saturating_sub(1);
+    let end_line = line_index_for_byte(line_starts, end_offset);
+
+    for line_idx in start_line..=end_line {
+      let (line_start, line_end) = line_bounds[line_idx];
+      let local_start = span.byte_range.start.max(line_start) - line_start;
+      let local_end = span.byte_range.end.min(line_end) - line_start;
+      if local_end > local_start {
+        self.line_spans[line_idx].push(HighlightSpan {
+          byte_range: local_start..local_end,
+          token_type: span.token_type,
+        });
+      }
+    }
+  }
+
+  fn flush_ready(
+    &mut self,
+    progress_end: usize,
+    line_ends: &[usize],
+    batches: &Mutex<VecDeque<HighlightBatch>>,
+  ) {
+    let ready_line = upper_bound(line_ends, progress_end);
+    if ready_line <= self.next_flush_line {
+      return;
+    }
+
+    let mut start = self.next_flush_line;
+    while start < ready_line {
+      let batch_end = (start + HIGHLIGHT_BATCH_LINES).min(ready_line);
+      let mut batch_lines = Vec::with_capacity(batch_end - start);
+      for line_idx in start..batch_end {
+        let spans = std::mem::take(&mut self.line_spans[line_idx]);
+        batch_lines.push(Arc::from(spans));
+      }
+      batches.lock().push_back(HighlightBatch {
+        start_line: start,
+        lines: batch_lines,
+      });
+      start = batch_end;
+    }
+    self.next_flush_line = ready_line;
+  }
+}
+
+fn compute_line_bounds(text: &str) -> Vec<(usize, usize)> {
+  let bytes = text.as_bytes();
+  let mut bounds = Vec::new();
+  let mut line_start = 0;
+
+  for (idx, byte) in bytes.iter().enumerate() {
+    if *byte == b'\n' {
+      let mut line_end = idx;
+      if line_end > line_start && bytes[line_end - 1] == b'\r' {
+        line_end -= 1;
+      }
+      bounds.push((line_start, line_end));
+      line_start = idx + 1;
+    }
+  }
+
+  let mut line_end = bytes.len();
+  if line_end > line_start && bytes[line_end - 1] == b'\r' {
+    line_end -= 1;
+  }
+  bounds.push((line_start, line_end));
+
+  bounds
+}
+
+fn line_index_for_byte(line_starts: &[usize], offset: usize) -> usize {
+  match line_starts.binary_search(&offset) {
+    Ok(idx) => idx,
+    Err(idx) => idx.saturating_sub(1),
+  }
+}
+
+fn upper_bound(values: &[usize], key: usize) -> usize {
+  let mut low = 0;
+  let mut high = values.len();
+  while low < high {
+    let mid = (low + high) / 2;
+    if values[mid] <= key {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  low
 }
 
 #[cfg(test)]
