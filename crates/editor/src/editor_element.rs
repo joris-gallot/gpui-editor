@@ -1,14 +1,19 @@
 use gpui::{
-  App, Bounds, DispatchPhase, ElementId, ElementInputHandler, Entity, GlobalElementId,
-  InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-  PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style, TextAlign, TextRun,
-  TextStyle, Window, fill, point, prelude::*, px, relative, size,
+  App, Bounds, DispatchPhase, ElementId, ElementInputHandler, Entity, GlobalElementId, Hitbox,
+  HitboxBehavior, InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+  MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Style,
+  TextAlign, TextRun, TextStyle, Window, fill, point, prelude::*, px, relative, size,
 };
-use std::{ops::Range, rc::Rc, sync::Arc};
+use std::{
+  ops::Range,
+  rc::Rc,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
 use crate::{
   document::Document,
-  editor::{DEFAULT_MAX_LINE_WIDTH, Editor},
+  editor::{DEFAULT_MAX_LINE_WIDTH, Editor, ScrollAxis},
 };
 use syntax::{HighlightSpan, Theme};
 
@@ -18,6 +23,9 @@ const NEWLINE_SELECTION_WIDTH: f32 = 4.0;
 const PIXEL_SCROLL_DIVISOR: f32 = 20.0;
 // Scroll sensitivity for line-based scrolling (mouse wheel)
 const LINE_SCROLL_MULTIPLIER: f32 = 3.0;
+const SCROLL_AXIS_RATIO: f32 = 1.1;
+const SCROLL_AXIS_SWITCH_RATIO: f32 = 1.4;
+const SCROLL_AXIS_TIMEOUT_MS: u64 = 150;
 
 /// Encapsulates layout information for mouse position -> text offset conversion
 #[derive(Clone)]
@@ -135,6 +143,7 @@ pub struct PrepaintState {
   viewport: Range<usize>,
   bounds: Bounds<Pixels>,
   line_height: Pixels,
+  scroll_hitbox: Hitbox,
 }
 
 impl EditorElement {
@@ -201,6 +210,8 @@ impl Element for EditorElement {
     window: &mut Window,
     cx: &mut App,
   ) -> Self::PrepaintState {
+    let scroll_hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+
     // Check if syntax highlights have been updated and invalidate cache if needed
     let (highlights_epoch, highlights_version, dirty_highlight_lines) = {
       let document = self.editor.read(cx).document().read(cx);
@@ -212,6 +223,14 @@ impl Element for EditorElement {
     self.editor.update(cx, |editor, _| {
       editor.viewport_height = bounds.size.height;
       editor.viewport_width = window.bounds().size.width;
+
+      if editor.scroll_axis_lock == Some(ScrollAxis::Vertical)
+        && editor.scroll_handle.offset().x != editor.last_scroll_x
+      {
+        editor
+          .scroll_handle
+          .set_offset(point(editor.last_scroll_x, px(0.0)));
+      }
 
       if highlights_epoch > editor.last_highlights_epoch {
         editor.line_layouts.clear();
@@ -401,6 +420,7 @@ impl Element for EditorElement {
       viewport,
       bounds,
       line_height,
+      scroll_hitbox,
     }
   }
 
@@ -477,24 +497,82 @@ impl Element for EditorElement {
     // Handle mouse wheel scroll
     window.on_mouse_event({
       let editor = self.editor.clone();
+      let scroll_hitbox = prepaint.scroll_hitbox.clone();
       move |event: &ScrollWheelEvent, phase, window, cx| {
-        if phase == DispatchPhase::Bubble {
+        if phase == DispatchPhase::Bubble && scroll_hitbox.should_handle_scroll(window) {
           editor.update(cx, |editor, cx| {
             let document = editor.document().read(cx);
             let total_lines = document.len_lines();
+            let now = Instant::now();
+            let reset_lock = editor
+              .last_scroll_time
+              .map(|last| now.duration_since(last) > Duration::from_millis(SCROLL_AXIS_TIMEOUT_MS))
+              .unwrap_or(true);
+            if reset_lock {
+              editor.scroll_axis_lock = None;
+              editor.last_scroll_x = editor.scroll_handle.offset().x;
+            }
+            editor.last_scroll_time = Some(now);
 
             // Extract scroll delta (handle both pixel and line scrolling)
             // Note: Negative delta because scrolling down should increase scroll_offset
-            let scroll_delta = match event.delta {
-              ScrollDelta::Pixels(point) => -(point.y / px(PIXEL_SCROLL_DIVISOR)), // Pixel scrolling (trackpad)
-              ScrollDelta::Lines(point) => -(point.y * LINE_SCROLL_MULTIPLIER), // Line scrolling (mouse wheel)
+            let pixel_delta = event.delta.pixel_delta(window.line_height());
+            let delta_x_px = pixel_delta.x;
+            let delta_y_px = -pixel_delta.y;
+            let delta_y = match event.delta {
+              ScrollDelta::Pixels(point) => -(point.y / px(PIXEL_SCROLL_DIVISOR)),
+              ScrollDelta::Lines(point) => -(point.y * LINE_SCROLL_MULTIPLIER),
+            };
+            let abs_x = delta_x_px.abs();
+            let abs_y = delta_y_px.abs();
+            let axis = match editor.scroll_axis_lock {
+              None => {
+                let axis = if abs_x > abs_y * SCROLL_AXIS_RATIO {
+                  ScrollAxis::Horizontal
+                } else {
+                  ScrollAxis::Vertical
+                };
+                if axis == ScrollAxis::Horizontal {
+                  editor.last_scroll_x = editor.scroll_handle.offset().x;
+                }
+                editor.scroll_axis_lock = Some(axis);
+                axis
+              }
+              Some(axis) => {
+                if axis == ScrollAxis::Vertical && abs_x > abs_y * SCROLL_AXIS_SWITCH_RATIO {
+                  editor.last_scroll_x = editor.scroll_handle.offset().x;
+                  editor.scroll_axis_lock = Some(ScrollAxis::Horizontal);
+                  ScrollAxis::Horizontal
+                } else if axis == ScrollAxis::Horizontal && abs_y > abs_x * SCROLL_AXIS_SWITCH_RATIO
+                {
+                  editor.scroll_axis_lock = Some(ScrollAxis::Vertical);
+                  ScrollAxis::Vertical
+                } else {
+                  axis
+                }
+              }
             };
 
-            let new_scroll = (editor.scroll_offset_y + scroll_delta)
+            if axis == ScrollAxis::Horizontal {
+              let new_scroll_x = editor.scroll_handle.offset().x + delta_x_px;
+              editor
+                .scroll_handle
+                .set_offset(point(new_scroll_x, px(0.0)));
+              editor.last_scroll_x = new_scroll_x;
+              cx.notify();
+              return;
+            }
+
+            let new_scroll = (editor.scroll_offset_y + delta_y)
               .max(0.0)
               .min((total_lines.saturating_sub(1)) as f32);
 
             editor.scroll_offset_y = new_scroll;
+            if editor.scroll_handle.offset().x != editor.last_scroll_x {
+              editor
+                .scroll_handle
+                .set_offset(point(editor.last_scroll_x, px(0.0)));
+            }
             let viewport = editor.viewport_range(window.line_height(), total_lines);
             editor.document.update(cx, |doc, cx| {
               doc.schedule_viewport_highlights(
@@ -506,6 +584,7 @@ impl Element for EditorElement {
             });
             cx.notify();
           });
+          cx.stop_propagation();
         }
       }
     });

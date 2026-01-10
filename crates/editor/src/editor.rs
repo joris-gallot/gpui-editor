@@ -61,6 +61,9 @@ pub struct Editor {
   pub viewport_width: Pixels,
   pub max_line_width: Pixels, // Maximum width of visible lines (never decreases to avoid scroll jumps)
   pub scroll_handle: ScrollHandle, // Handle for horizontal scrolling
+  pub(crate) scroll_axis_lock: Option<ScrollAxis>,
+  pub(crate) last_scroll_time: Option<Instant>,
+  pub(crate) last_scroll_x: Pixels,
 
   // Cache size limit to prevent memory issues with large files
   pub(crate) max_cache_size: usize,
@@ -79,6 +82,12 @@ pub struct Editor {
 
   // Cursor blinking
   pub cursor_blink: Entity<CursorBlink>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ScrollAxis {
+  Horizontal,
+  Vertical,
 }
 
 fn generate_rust_test_content_100k() -> String {
@@ -174,6 +183,9 @@ impl Editor {
       viewport_width: px(DEFAULT_VIEWPORT_WIDTH),   // Will be updated on first render
       max_line_width: px(DEFAULT_MAX_LINE_WIDTH),   // Will be updated on first render
       scroll_handle: ScrollHandle::new(),
+      scroll_axis_lock: None,
+      last_scroll_time: None,
+      last_scroll_x: px(0.0),
       max_cache_size: MAX_CACHE_SIZE,
       target_column: None,
       undo_stack: VecDeque::new(),
@@ -745,6 +757,9 @@ pub mod tests {
           viewport_width: px(DEFAULT_VIEWPORT_WIDTH),
           max_line_width: px(DEFAULT_MAX_LINE_WIDTH),
           scroll_handle: ScrollHandle::new(),
+          scroll_axis_lock: None,
+          last_scroll_time: None,
+          last_scroll_x: px(0.0),
           max_cache_size: MAX_CACHE_SIZE,
           target_column: None,
           undo_stack: VecDeque::new(),
